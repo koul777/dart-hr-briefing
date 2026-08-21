@@ -123,18 +123,15 @@ async function prepareComparison(page, h) {
 }
 
 async function openTab(page, h, name, readySelector) {
-  const tab = page.locator("#tabs [data-tab]").filter({ hasText: name }).first();
+  const tabKeys = { Overview: "overview", "Strategy Brief": "strategy" };
+  const tabKey = tabKeys[name] || name.toLowerCase().replace(/\s+/g, "-");
+  const tab = page.locator(`#tabs [data-tab="${tabKey}"]`).first();
   await tab.scrollIntoViewIfNeeded();
   const tabBox = await tab.boundingBox();
   await h.move({ x: tabBox.x + tabBox.width / 2, y: tabBox.y + tabBox.height / 2 });
   await tab.click();
   await sleep(380);
-  await page.waitForFunction((label) => [...document.querySelectorAll("#tabs [data-tab]")].some((item) => item.classList.contains("active") && (item.textContent || "").includes(label)), name, { timeout: 10000 });
-  const state = await page.evaluate(() => ({
-    active: document.querySelector("#tabs button.active")?.dataset.tab || "none",
-    content: document.querySelector("#tabContent")?.innerText?.slice(0, 120) || "",
-  }));
-  console.log(JSON.stringify({ tab: name, ...state }));
+  await page.waitForFunction((key) => [...document.querySelectorAll("#tabs [data-tab]")].some((item) => item.classList.contains("active") && item.dataset.tab === key), tabKey, { timeout: 10000 });
   await page.waitForFunction((selector) => Boolean(document.querySelector(selector)), readySelector, { timeout: 120000 });
   await sleep(900);
 }
@@ -149,6 +146,12 @@ async function captureScene(number, label, sequence) {
   const page = await context.newPage();
   const before = new Set(fs.readdirSync(RAW));
   try {
+    // Keep every scene in the same visual system as Strategy Brief. The app
+    // intentionally switches to its dark strategy theme when that tab opens;
+    // setting the persisted theme before navigation prevents a mid-reel jump.
+    await context.addInitScript(() => {
+      localStorage.setItem("dart-theme", "dark");
+    });
     await page.goto(APP, { waitUntil: "networkidle", timeout: 60000 });
     await installOverlay(page, label);
     const h = helpers(page);
