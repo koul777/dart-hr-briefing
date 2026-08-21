@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DART Workforce Intelligence · Demo</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; background: #0e1218; color: #f5f7fb; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 32px; background: radial-gradient(circle at 20% 0%, #1c2938 0, #0e1218 48%); }
+      main { width: min(1180px, 100%); }
+      .eyebrow { color: #5ec98b; letter-spacing: .14em; font-weight: 800; font-size: 12px; }
+      h1 { margin: 10px 0 8px; font-size: clamp(30px, 5vw, 58px); letter-spacing: -.06em; }
+      p { color: #aeb8c7; line-height: 1.6; }
+      .stage { margin-top: 28px; padding: 12px; background: #151b24; border: 1px solid #2a3544; border-radius: 22px; box-shadow: 0 24px 80px #0008; }
+      video { display: block; width: 100%; border-radius: 14px; background: #080b10; }
+      .footer { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+      .footer span { color: #7f8ca0; font-size: 13px; }
+      a { color: #77a5ff; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .fallback { margin-top: 18px; color: #8e9aac; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">DART / WORKFORCE INTELLIGENCE</div>
+      <h1>공시 데이터를 HR 전략 영상으로 읽습니다.</h1>
+      <p>실제 앱을 조작하면서 기업 비교, 재무 시각화, Strategy Brief, AI 분석 handoff 흐름을 녹화한 제품 시연 영상입니다.</p>
+      <section class="stage">
+        <video controls autoplay muted loop playsinline poster="./assets/dashboard-home.png">
+          <source src="./assets/dart-workforce-demo.mp4" type="video/mp4" />
+          <a href="./assets/dart-workforce-demo.mp4">MP4 영상 열기</a>
+        </video>
+      </section>
+      <div class="footer">
+        <span>1:39 · 1920×1080 · H.264</span>
+        <a href="./assets/dart-workforce-demo.gif">GIF 티저 보기</a>
+      </div>
+      <p class="fallback">GitHub README에서 MP4가 바로 재생되지 않으면 이 파일을 내려받아 브라우저로 열거나, 저장소 루트에서 <code>python -m http.server --directory docs</code>를 실행한 뒤 <code>/demo.html</code>로 접속하세요.</p>
+    </main>
+  </body>
+</html>
