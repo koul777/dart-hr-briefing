@@ -2,9 +2,9 @@
 
 공시 기반 인력·보상·임원구조 벤치마크를 시각적으로 탐색하는 People Analytics 프로그램입니다. OpenDART API에서 확인 가능한 기업 재무·인력·임원 공시를 같은 기준연도와 보고서 기준으로 묶어, HR 전략 가설을 만들 수 있는 화면으로 정리합니다.
 
-![DART Workforce Intelligence 홍보 영상](docs/assets/dart-workforce-intro.gif)
+![DART Workforce Intelligence 시연 티저](docs/assets/dart-workforce-demo.gif)
 
-> GIF는 프로그램을 처음 실행했을 때 보게 되는 비교 화면을 짧은 소개 영상으로 구성한 것입니다.
+> 실제 앱을 headless Edge로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성한 시연 티저입니다. [고화질 전체 MP4 시연 영상](docs/assets/dart-workforce-demo.mp4)도 확인할 수 있습니다.
 
 ## 이 프로그램으로 무엇을 보나요?
 
@@ -122,6 +122,28 @@ node --check static/app.js
 ```
 
 배포 패키지 smoke test에서는 health API, 재무·People context, AI prompt handoff, Strategy Brief 정적 자산을 확인했습니다. 시각 QA 체크리스트와 제한사항은 [`reports/visual_qa_20260821.md`](reports/visual_qa_20260821.md)에 기록되어 있습니다.
+
+## 시연 영상 제작
+
+시연 영상은 [demo-video-skill](https://github.com/Kminer2053/demo-video-skill)의 오픈소스 제작 원칙을 적용했습니다. 실제 앱을 Playwright headless 브라우저로 조작하면서 다음 흐름을 녹화합니다.
+
+1. 기업 검색·선택
+2. 삼성전자·SK하이닉스 DART 비교
+3. KPI·막대 그래프 시각화
+4. Strategy Brief의 이익·급여·Pay Equity 흐름
+5. AI 분석 질문과 Claude MCP prompt handoff
+
+재현하려면 개발 서버를 먼저 실행한 뒤, Node.js·`playwright-core`·Edge·`ffmpeg`가 준비된 환경에서 실행합니다.
+
+```powershell
+$env:APP = "http://127.0.0.1:8768"
+$env:SCR = "C:\workspace\dart\video_work"
+$env:CHROME_PATH = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+$env:PLAYWRIGHT_CORE = "C:\workspace\dart\video_work\node_modules\playwright-core"
+node tools/capture_dart_demo.js all
+```
+
+녹화 원본과 중간 산출물은 `video_work/`에 두며 저장소에는 포함하지 않습니다. 최종 배포용 MP4·GIF만 `docs/assets/`에 저장합니다.
 
 ## 문서
 

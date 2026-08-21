@@ -16,6 +16,8 @@ build/
 # Generated visual QA intermediates (the README uses the final PNG/GIF only)
 docs/assets/*-preview.png
 docs/assets/*.mp4
+!docs/assets/dart-workforce-demo.mp4
 docs/assets/dashboard-browser.png
 docs/assets/dashboard-home-content.png
 reports/overnight_sessions/
+video_work/
