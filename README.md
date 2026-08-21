@@ -64,6 +64,20 @@
 
 Claude MCP gateway가 연결되어 있으면 분석 결과를 표시하고, 연결되지 않은 기본 상태에서는 `not_configured`와 함께 복사 가능한 prompt handoff를 보여줍니다. AI는 DART 원자료를 대체하지 않으며, gateway 오류를 성공 결과로 표시하지 않습니다.
 
+## 공개 URL(Vercel)에서 사용하는 방법
+
+웹 배포형은 다음 흐름을 기준으로 사용합니다.
+
+1. 운영자가 Vercel 서버 환경변수에 `OPENDART_API_KEY`를 설정합니다. 이 키는 브라우저에 노출하거나 저장소에 커밋하지 않습니다.
+2. 사용자가 Vercel URL에 접속합니다.
+3. 기업명·종목코드·DART 고유번호로 기업을 검색하고, 기준연도와 보고서를 선택한 뒤 **재무구조 비교**를 실행합니다.
+4. `Overview`, `People`, `Executives`, `Strategy Brief` 탭에서 재무·인력·임원구조 시각화를 확인합니다.
+5. AI 분석 기능을 사용하는 배포 버전에서는 사용자가 본인의 OpenAI API 키를 입력합니다. 키는 URL·로그·DB에 남기지 않고, 분석 요청에만 사용합니다.
+
+현재 저장소의 AI 기본 연결은 OpenAI가 아니라 선택적인 Claude MCP gateway이며, OpenAI API 키 입력 UI는 별도 OpenAI 어댑터를 연결한 배포 버전에서 활성화합니다. OpenAI 키가 없어도 DART 기반 비교·People·임원·Strategy Brief 시각화는 사용할 수 있어야 하며, AI 자동 해석만 제한됩니다.
+
+> 공개 서비스에서는 DART 호출량 제한, 사용자별 요청 제한, API 키 미저장 정책을 함께 적용해야 합니다. 사용자가 입력한 OpenAI 키를 query string이나 프론트엔드 코드에 포함하지 않습니다.
+
 ## 데이터 범위
 
 현재 프로그램은 공개 OpenDART API만 사용합니다.
