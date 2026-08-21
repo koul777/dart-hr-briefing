@@ -2,9 +2,9 @@
 
 공시 기반 인력·보상·임원구조 벤치마크를 시각적으로 탐색하는 People Analytics 프로그램입니다. OpenDART API에서 확인 가능한 기업 재무·인력·임원 공시를 같은 기준연도와 보고서 기준으로 묶어, HR 전략 가설을 만들 수 있는 화면으로 정리합니다.
 
-<a href="docs/demo.html"><img src="docs/assets/dart-workforce-demo.gif" alt="DART Workforce Intelligence 시연 티저" /></a>
+<a href="https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html"><img src="docs/assets/dart-workforce-demo.gif" alt="DART Workforce Intelligence 시연 티저" /></a>
 
-> 실제 앱을 headless Edge로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성한 시연 티저입니다. GIF를 클릭하면 [브라우저용 시연 플레이어](docs/demo.html)가 열립니다. [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 별도로 내려받아 재생할 수 있습니다.
+> 실제 앱을 headless Edge로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성한 시연 티저입니다. GIF를 클릭하면 [브라우저용 시연 플레이어](https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html)가 열립니다. [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 별도로 내려받아 재생할 수 있습니다.
 
 ## 이 프로그램으로 무엇을 보나요?
 
@@ -147,7 +147,7 @@ node tools/capture_dart_demo.js all
 
 ### 영상이 README에서 바로 재생되지 않을 때
 
-GitHub README는 MP4를 일반적인 `<video>` 플레이어로 자동 재생하지 않을 수 있습니다. GIF는 README에서 바로 보이고, 전체 영상은 [`docs/demo.html`](docs/demo.html)을 내려받아 브라우저로 열면 재생됩니다.
+GitHub README는 MP4를 일반적인 `<video>` 플레이어로 자동 재생하지 않을 수 있습니다. GIF는 README에서 바로 보이고, 전체 영상은 [raw 시연 플레이어](https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html)를 열거나 [`docs/demo.html`](docs/demo.html)을 내려받아 브라우저로 열면 재생됩니다.
 
 ```powershell
 python -m http.server --directory docs 8000
