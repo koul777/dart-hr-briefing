@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "DART 재무비교 오케스트레이션",
+    "output": "orchestration-dart-claude.html",
+    "animation": "none",
+    "quality_profile": "showcase",
+    "viewBox": [1000, 650],
+    "views": [
+      {
+        "id": "main-flow",
+        "label": "주요 실행 흐름",
+        "focus": ["user", "dashboard", "orchestrator", "dart_api", "normalizer", "claude_mcp", "answer"],
+        "note": "질문을 DART 근거 기반 비교 결과로 바꾸는 최소 실행 경로입니다."
+      },
+      {
+        "id": "ai-boundary",
+        "label": "Claude MCP 경계",
+        "focus": ["orchestrator", "normalizer", "claude_mcp", "answer"],
+        "note": "오케스트레이터가 만든 분석 컨텍스트를 Claude Code MCP가 해석합니다."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "ui", "label": "사용자 화면" },
+    { "id": "orchestration", "label": "오케스트레이션" },
+    { "id": "data", "label": "DART 데이터" },
+    { "id": "ai", "label": "Claude 분석" }
+  ],
+  "phases": [
+    { "id": "input", "label": "입력", "fromCol": 0, "toCol": 1 },
+    { "id": "prepare", "label": "수집·준비", "fromCol": 2, "toCol": 4, "variant": "emphasis" },
+    { "id": "answering", "label": "분석·결과", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "control", "label": "실행 제어", "lane": "orchestration", "fromCol": 2, "toCol": 2, "variant": "emphasis" },
+    { "id": "mcp_boundary", "label": "Claude Code MCP", "lane": "ai", "fromCol": 5, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["user", "dashboard", "orchestrator", "dart_api", "normalizer", "claude_mcp", "answer"],
+  "nodes": [
+    { "id": "user", "lane": "ui", "col": 0, "type": "external", "label": "사용자", "sublabel": "질문 입력" },
+    { "id": "dashboard", "lane": "ui", "col": 1, "type": "frontend", "label": "비교 화면", "sublabel": "기업 선택" },
+    { "id": "answer", "lane": "ui", "col": 5, "type": "frontend", "label": "결과", "sublabel": "수치·근거" },
+    { "id": "orchestrator", "lane": "orchestration", "col": 2, "type": "backend", "label": "조정기", "sublabel": "조회·조립", "tag": "control" },
+    { "id": "dart_api", "lane": "data", "col": 3, "type": "cloud", "label": "OpenDART", "sublabel": "공시 API", "tag": "server key", "width": 76 },
+    { "id": "normalizer", "lane": "orchestration", "col": 4, "type": "backend", "label": "정규화", "sublabel": "단위·비율" },
+    { "id": "claude_mcp", "lane": "ai", "col": 5, "type": "messagebus", "label": "Claude MCP", "sublabel": "분석 도구", "tag": "tool boundary" }
+  ],
+  "edges": [
+    { "id": "user_dashboard", "from": "user", "to": "dashboard", "variant": "default" },
+    { "id": "dashboard_orchestrator", "from": "dashboard", "to": "orchestrator", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "id": "orchestrator_dart", "from": "orchestrator", "to": "dart_api", "label": "조회", "variant": "default" },
+    { "id": "dart_normalizer", "from": "dart_api", "to": "normalizer", "variant": "default", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "id": "normalizer_claude", "from": "normalizer", "to": "claude_mcp", "variant": "emphasis" },
+    { "id": "claude_answer", "from": "claude_mcp", "to": "answer", "label": "해석", "variant": "emphasis", "role": "return", "route": "straight" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "오케스트레이터",
+      "items": [
+        "사용자 질문과 비교 조건을 검증합니다",
+        "OpenDART 조회와 재무 정규화를 순서대로 실행합니다",
+        "질문·수치·제한조건을 분석 컨텍스트로 조립합니다"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Claude Code MCP",
+      "items": [
+        "DART를 직접 조회하는 수집기가 아닙니다",
+        "오케스트레이터가 전달한 근거를 해석합니다",
+        "결과에 사실·해석·주의점을 나눠 담습니다"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "현재 구현과 다음 연결",
+      "items": [
+        "현재 대시보드는 비교표와 프롬프트 복사를 제공합니다",
+        "API 키는 서버의 .env에서만 읽습니다",
+        "다음 단계에서 Claude MCP 실행 어댑터를 연결합니다"
+      ]
+    }
+  ]
+}

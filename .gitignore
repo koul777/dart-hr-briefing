@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+data/
+
+# Local build, cache, and browser QA artifacts
+build/
+.pytest_cache/
+.ruff_cache/
+.playwright-cli/
+*.previous.exe
+*.visual-check.json
+/DARTStructure.exe
+
+# Generated visual QA intermediates (the README uses the final PNG/GIF only)
+docs/assets/*-preview.png
+docs/assets/*.mp4
+docs/assets/dashboard-browser.png
+docs/assets/dashboard-home-content.png
+reports/overnight_sessions/

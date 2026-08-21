@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f6f2" />
+    <title>DART Workforce Intelligence — 공시 기반 인력·보상·임원구조 벤치마크</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b8877'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-size='38' font-family='Arial' font-weight='700' fill='white'%3ED%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="DART Workforce Intelligence home">
+          <span class="brand-mark">D</span>
+          <span><strong>DART Workforce Intelligence</strong><small>공시 기반 인력·보상·임원구조 벤치마크</small></span>
+        </a>
+        <div class="top-controls">
+          <label>기준연도 <select id="yearSelect" aria-label="기준연도"></select></label>
+          <label>보고서 <select id="reportSelect" aria-label="보고서">
+            <option value="11011">사업보고서</option><option value="11012">반기보고서</option>
+            <option value="11013">1분기보고서</option><option value="11014">3분기보고서</option>
+          </select></label>
+          <span class="api-status" id="apiStatus"><i></i> API 확인 중</span>
+          <button class="icon-button" id="themeToggle" type="button" aria-label="테마 변경">◐</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-title"><div><span class="kicker">UNIVERSE</span><h2>비교 기업</h2></div><b id="selectionCount">0 / 8</b></div>
+          <label class="field-label" for="companySearch">기업 추가</label>
+          <div class="search-wrap"><span>⌕</span><input id="companySearch" type="search" placeholder="기업명·종목코드·DART 고유번호" autocomplete="off" /><kbd>/</kbd></div>
+          <div class="search-results" id="searchResults"></div>
+          <div class="selected-list" id="selectedChips"></div>
+          <div class="sidebar-note"><i></i> 동일한 연도·보고서 기준으로 비교합니다.</div>
+          <div class="prompt-box">
+            <div class="prompt-box-title"><div><span class="kicker">AI ANALYSIS</span><h3>AI 분석 질문</h3></div><span>선택</span></div>
+            <p>DART 공시 수치를 근거로 HR 관점의 질문을 입력하면 AI 해석용 컨텍스트를 만들 수 있습니다.</p>
+            <textarea id="analysisPrompt" rows="4" placeholder="예: 영업이익 증가와 평균 급여 변화가 함께 나타난 기업을 찾아줘"></textarea>
+            <button class="secondary-button full" id="runAiButton" type="button">AI 분석 실행 ↗</button>
+            <button class="secondary-button full" id="copyPromptButton" type="button">분석 프롬프트 복사 ↗</button>
+            <div class="ai-result" id="aiResult" aria-live="polite"></div>
+          </div>
+          <button class="compare-button" id="compareButton" type="button"><span>재무구조 비교</span><b>→</b></button>
+          <p class="sidebar-foot">OpenDART 공시 기준 · AI는 근거 기반 해석 보조입니다.</p>
+        </aside>
+
+        <section class="main-content">
+          <div class="intro"><div><span class="kicker accent">DART / STRUCTURE VIEW</span><h1>기업의 숫자를<br /><em>구조로 비교하세요.</em></h1><p>자산이 어떻게 구성되고, 부채와 자본이 어떤 균형을 이루는지<br class="wide-only" /> 같은 기준으로 나란히 살펴봅니다.</p></div><div class="intro-status"><i></i><span id="headingMeta">기업을 선택하면 비교가 시작됩니다</span></div></div>
+          <div class="message" id="message" role="status" aria-live="polite"></div>
+
+          <section class="dashboard hidden" id="dashboard">
+            <div class="dashboard-head"><nav class="tabs" id="tabs" aria-label="분석 보기"><button class="active" data-tab="overview" type="button">Overview</button><button data-tab="compare" type="button">Compare</button><button data-tab="trend" type="button">Trend</button><button data-tab="people" type="button">People</button><button data-tab="executives" type="button">Executives</button><button data-tab="strategy" type="button">Strategy Brief</button><button data-tab="radar" type="button">Radar</button><button data-tab="scatter" type="button">Scatter</button><button data-tab="rank" type="button">Rank</button></nav><button class="quiet-button" id="exportButton" type="button">↓ CSV 내보내기</button></div>
+            <div class="data-strip"><span>현재 기준</span><strong id="dataMeta">—</strong><i></i><span id="dataCoverage">—</span><small>OpenDART 원문</small></div>
+            <div class="metric-toolbar"><div><span class="kicker">METRICS</span><strong>비교 지표</strong></div><div class="metric-pills" id="metricPills"></div><button class="clear-metrics" id="clearMetricsButton" type="button">초기화</button></div>
+            <div id="tabContent"></div>
+            <div class="readout-card"><div class="readout-head"><div><span class="kicker">READOUT · DATA-LED</span><h3>숫자에서 읽히는 구조</h3></div><button id="readoutCopyButton" type="button">프롬프트 복사 ↗</button></div><p id="readoutText">선택한 기업의 실제 공시 수치가 여기에 표시됩니다.</p></div>
+            <p class="disclaimer">비교 수치는 OpenDART가 제공하는 응답 가능한 공시 데이터를 사용합니다. 공시 누락, 단위 및 회계정책 차이에 따라 단순 비교가 제한될 수 있습니다.</p>
+          </section>
+
+          <section class="welcome" id="welcome"><div class="welcome-mark">⌁</div><span class="kicker accent">START WITH A UNIVERSE</span><h2>비교할 기업을<br /><em>왼쪽에서 선택하세요.</em></h2><p>재무구조의 규모, 균형, 수익성, 유동성을<br />한 화면에서 비교할 수 있습니다.</p><div class="legend"><span><i class="teal"></i>규모</span><span><i class="coral"></i>수익성</span><span><i class="gold"></i>안정성</span></div></section>
+        </section>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
