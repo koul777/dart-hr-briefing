@@ -4,9 +4,9 @@
 
 OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도와 보고서로 묶어 비교하고, 사용자가 직접 입력한 OpenAI API Key로 근거 기반 HR 브리핑을 이어서 질문할 수 있는 People Analytics 프로그램입니다.
 
-<a href="https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html"><img src="docs/assets/dart-workforce-demo.gif" alt="DART Workforce Intelligence 시연 티저" /></a>
+<a href="https://github.com/koul777/dart-hr-briefing/raw/refs/heads/main/docs/demo.html"><img src="docs/assets/dart-workforce-demo.gif" alt="DART HR Briefing 시연 티저" /></a>
 
-> 실제 앱을 headless Edge로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성한 시연 티저입니다. GIF를 클릭하면 [브라우저용 시연 플레이어](https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html)가 열립니다. [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 별도로 내려받아 재생할 수 있습니다.
+> 실제 앱을 headless Edge로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성한 시연 티저입니다. GIF를 클릭하면 [브라우저용 시연 플레이어](https://github.com/koul777/dart-hr-briefing/raw/refs/heads/main/docs/demo.html)가 열립니다. [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 별도로 내려받아 재생할 수 있습니다.
 
 ## 핵심 기능
 
