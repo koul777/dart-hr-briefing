@@ -316,9 +316,14 @@ class StrategyInterpreterAgent:
         context = _build_strategy_context(state)
         prompt = _build_strategy_prompt(context)
         provider = self.provider
+        provider_meta = {
+            "id": str(getattr(provider, "provider_id", "not_configured")),
+            "name": str(getattr(provider, "provider_label", type(provider).__name__ if provider else "미설정")),
+        }
         if provider is None or not getattr(provider, "configured", False):
             return {
                 "provider": {
+                    **provider_meta,
                     "status": "not_configured",
                     "prompt": prompt,
                     "result": None,
@@ -329,6 +334,7 @@ class StrategyInterpreterAgent:
         except Exception as exc:
             return {
                 "provider": {
+                    **provider_meta,
                     "status": "error",
                     "prompt": prompt,
                     "result": None,
@@ -338,6 +344,7 @@ class StrategyInterpreterAgent:
         if isinstance(result, Mapping) and result.get("status") in {"not_configured", "unavailable"}:
             return {
                 "provider": {
+                    **provider_meta,
                     "status": "not_configured",
                     "prompt": prompt,
                     "result": None,
@@ -347,14 +354,16 @@ class StrategyInterpreterAgent:
             error = result.get("error_message") or result.get("error") or result.get("message")
             return {
                 "provider": {
+                    **provider_meta,
                     "status": "error",
                     "prompt": prompt,
                     "result": None,
-                    "error": str(error or "Claude MCP provider returned an error."),
+                    "error": str(error or "AI provider returned an error."),
                 }
             }
         return {
             "provider": {
+                **provider_meta,
                 "status": "completed" if result is not None else "no_result",
                 "prompt": prompt,
                 "result": result,

@@ -5,7 +5,7 @@ a = Analysis(
     ['server.py'],
     pathex=[],
     binaries=[],
-    datas=[('static', 'static')],
+    datas=[('static', 'static'), ('HR_BRIEFING_RULES.md', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

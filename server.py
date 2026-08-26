@@ -26,6 +26,7 @@ from claude_mcp_adapter import (
     create_claude_code_mcp_adapter,
 )
 from agent_orchestration import WorkforceAgentOrchestrator, WorkforceObservation
+from openai_responses_adapter import OpenAIResponsesError, OpenAIResponsesProvider
 from orchestrator import AnalysisOrchestrator, AnalysisRequest, MAX_CORP_CODES
 from workforce_analytics import build_workforce_summary
 
@@ -39,7 +40,11 @@ if getattr(sys, "frozen", False):
 else:
     ROOT = SOURCE_ROOT
     STATIC_DIR = ROOT / "static"
-DATA_DIR = ROOT / "data"
+DATA_DIR = (
+    Path(os.environ.get("DART_DATA_DIR", "/tmp/dart-workforce"))
+    if os.environ.get("VERCEL")
+    else ROOT / "data"
+)
 CORP_CACHE = DATA_DIR / "corp_codes.json"
 DART_BASE = "https://opendart.fss.or.kr/api"
 PORT = int(os.environ.get("PORT", "8765"))
@@ -68,9 +73,32 @@ def load_dotenv(path: Path) -> dict[str, str]:
 
 
 DOTENV = load_dotenv(ROOT / ".env")
+if Path.cwd().resolve() != ROOT.resolve():
+    for dotenv_key, dotenv_value in load_dotenv(Path.cwd() / ".env").items():
+        DOTENV.setdefault(dotenv_key, dotenv_value)
 API_KEY = DOTENV.get("OPENDART_API_KEY") or os.environ.get("OPENDART_API_KEY", "")
+RUNTIME_ENV = dict(os.environ)
+RUNTIME_ENV.update(DOTENV)
 CORP_LOCK = threading.Lock()
 MAX_COMPANIES = MAX_CORP_CODES
+
+
+def load_briefing_rules() -> str | None:
+    candidates = (
+        ROOT / "HR_BRIEFING_RULES.md",
+        STATIC_DIR.parent / "HR_BRIEFING_RULES.md",
+        SOURCE_ROOT / "HR_BRIEFING_RULES.md",
+    )
+    for path in candidates:
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            continue
+        if text:
+            return text[:20_000]
+    return None
 
 DART_METRIC_CATALOG: list[dict[str, Any]] = [
     {"metric_id": "assets", "label": "자산총계", "group": "규모", "unit": "억원", "source_key": "assets"},
@@ -114,6 +142,9 @@ EXECUTIVE_METRIC_CATALOG: list[dict[str, Any]] = [
 class MCPProviderFacade:
     """Adapt the transport-neutral Claude MCP client to the orchestrator protocol."""
 
+    provider_id = "claude_mcp"
+    provider_label = "Claude MCP"
+
     def __init__(self, adapter: Any, tool: str = "analyze_financial_structure") -> None:
         self.adapter = adapter
         self.tool = tool
@@ -135,16 +166,38 @@ class MCPProviderFacade:
 
 
 MCP_ADAPTER = MCPProviderFacade(create_claude_code_mcp_adapter())
-ORCHESTRATOR = AnalysisOrchestrator(MCP_ADAPTER)
+OPENAI_PROVIDER = OpenAIResponsesProvider.from_environment(RUNTIME_ENV)
+CUSTOM_BRIEFING_RULES = load_briefing_rules()
+if CUSTOM_BRIEFING_RULES:
+    OPENAI_PROVIDER.instructions = CUSTOM_BRIEFING_RULES
+ACTIVE_AI_PROVIDER = OPENAI_PROVIDER if OPENAI_PROVIDER.configured else MCP_ADAPTER
+ORCHESTRATOR = AnalysisOrchestrator(ACTIVE_AI_PROVIDER)
+CONTEXT_ORCHESTRATOR = AnalysisOrchestrator()
 WORKFORCE_MCP_ADAPTER = MCPProviderFacade(
     create_claude_code_mcp_adapter(),
     tool="analyze_workforce_strategy",
 )
-WORKFORCE_ORCHESTRATOR = WorkforceAgentOrchestrator(provider=WORKFORCE_MCP_ADAPTER)
+WORKFORCE_AI_PROVIDER = (
+    OPENAI_PROVIDER if OPENAI_PROVIDER.configured else WORKFORCE_MCP_ADAPTER
+)
+WORKFORCE_ORCHESTRATOR = WorkforceAgentOrchestrator(provider=WORKFORCE_AI_PROVIDER)
 
 
 class DARTError(Exception):
     pass
+
+
+def user_openai_provider(api_key: str) -> OpenAIResponsesProvider:
+    """Create a request-scoped provider without retaining the user's key."""
+
+    key = api_key.strip()
+    if not key:
+        raise ValueError("OpenAI API Key를 입력해 주세요.")
+    if len(key) > 512 or any(character.isspace() for character in key):
+        raise ValueError("OpenAI API Key 형식이 올바르지 않습니다.")
+    if not key.startswith("sk-"):
+        raise ValueError("OpenAI API Key는 sk-로 시작해야 합니다.")
+    return replace(OPENAI_PROVIDER, api_key=key)
 
 
 def dart_request(endpoint: str, params: dict[str, str], binary: bool = False) -> Any:
@@ -735,6 +788,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "").strip()
         if not origin:
             return True
+        origin_parts = urlparse(origin)
+        request_host = self.headers.get("Host", "").strip().lower()
+        if origin_parts.netloc.lower() == request_host and origin_parts.scheme in {"http", "https"}:
+            return True
         return origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
 
     def read_json_body(self) -> dict[str, Any]:
@@ -747,14 +804,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise ValueError("요청 본문은 JSON 객체여야 합니다.")
         return payload
 
+    def request_openai_provider(self) -> OpenAIResponsesProvider | None:
+        api_key = self.headers.get("X-OpenAI-API-Key", "")
+        return user_openai_provider(api_key) if api_key.strip() else None
+
     def do_POST(self) -> None:
         if not self.origin_allowed():
             self.send_json({"error": "허용되지 않은 Origin입니다."}, HTTPStatus.FORBIDDEN)
             return
         parsed = urlparse(self.path)
         try:
-            if parsed.path not in {"/api/analysis", "/api/analysis/context"}:
+            if parsed.path not in {"/api/analysis", "/api/analysis/context", "/api/ai/connect"}:
                 self.send_json({"error": "POST 경로를 찾을 수 없습니다."}, HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path == "/api/ai/connect":
+                provider = self.request_openai_provider()
+                if provider is None:
+                    raise ValueError("OpenAI API Key를 입력해 주세요.")
+                provider.validate_connection()
+                self.send_json({
+                    "ok": True,
+                    "provider": provider.provider_id,
+                    "provider_name": provider.provider_label,
+                    "model": provider.model,
+                    "stored": False,
+                })
                 return
             payload = self.read_json_body()
             request = analysis_request_from_payload(payload)
@@ -775,7 +849,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 results = fetch_history_results(list(request.corp_codes), from_year, to_year, request.report_code)
                 request = replace(request, from_year=from_year, to_year=to_year)
-                response = ORCHESTRATOR.run(request, results, DART_METRIC_CATALOG)
             else:
                 year = request.year or str(time.localtime().tm_year - 1)
                 if not re.fullmatch(r"20\d{2}", year):
@@ -783,28 +856,61 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 results = fetch_financial_results(list(request.corp_codes), year, request.report_code)
                 request = replace(request, year=year)
-                response = ORCHESTRATOR.run(request, results, DART_METRIC_CATALOG)
-            people_context = str(payload.get("people_context") or "").strip()
-            if people_context:
-                people_context = people_context[:50_000]
-                context = response.get("context")
-                if isinstance(context, dict):
-                    context["people_analytics"] = {
-                        "source": "OpenDART",
-                        "metric_catalog": PEOPLE_METRIC_CATALOG,
-                        "summary": people_context,
-                    }
-                response["prompt"] = f"{response.get('prompt', '').rstrip()}\n\n[People Analytics]\n{people_context}\n\n[HR 해석 규칙]\n직원·임원·보상 수치는 공시된 집계값으로만 해석하고, 인과관계나 개인별 성과를 단정하지 마세요."
-                prompt_handoff = response.get("prompt_handoff")
-                if isinstance(prompt_handoff, dict):
-                    prompt_handoff["prompt"] = response["prompt"]
-                    prompt_handoff["context"] = response.get("context")
+            extra_context: dict[str, Any] = {}
+            try:
+                if request.from_year or request.to_year:
+                    people_records = fetch_people_history_results(
+                        list(request.corp_codes),
+                        request.from_year or from_year,
+                        request.to_year or to_year,
+                        request.report_code,
+                    )
+                else:
+                    people_records = fetch_people_results(
+                        list(request.corp_codes),
+                        request.year or year,
+                        request.report_code,
+                    )
+                people_payload: dict[str, Any] = {
+                    "status": "completed",
+                    "records": people_records,
+                }
+            except DARTError as exc:
+                people_payload = {
+                    "status": "error",
+                    "records": [],
+                    "error": str(exc),
+                }
+            extra_context["people_analytics"] = {
+                "source": "OpenDART server-side lookup",
+                "metric_catalog": PEOPLE_METRIC_CATALOG,
+                **people_payload,
+                "interpretation_rule": (
+                    "직원·임원·보상 수치는 공시된 집계값으로만 해석하고, "
+                    "인과관계나 개인별 성과를 단정하지 않는다."
+                ),
+            }
+            request_provider = self.request_openai_provider()
+            if parsed.path == "/api/analysis/context":
+                analysis_orchestrator = CONTEXT_ORCHESTRATOR
+            elif request_provider is not None:
+                analysis_orchestrator = AnalysisOrchestrator(request_provider)
+            else:
+                analysis_orchestrator = ORCHESTRATOR
+            response = analysis_orchestrator.run(
+                request,
+                results,
+                DART_METRIC_CATALOG,
+                extra_context=extra_context,
+            )
             response["selection"] = {"count": len(request.corp_codes), "max": MAX_COMPANIES}
             response["source"] = "OpenDART"
             self.send_json(response)
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except DARTError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+        except OpenAIResponsesError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         except Exception as exc:
             self.send_json({"error": f"서버 처리 중 오류가 발생했습니다: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -816,7 +922,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/health":
-                self.send_json({"ok": True, "api_key_configured": len(API_KEY) == 40})
+                self.send_json({
+                    "ok": True,
+                    "api_key_configured": len(API_KEY) == 40,
+                    "ai_provider_configured": bool(getattr(ACTIVE_AI_PROVIDER, "configured", False)),
+                    "ai_provider": getattr(ACTIVE_AI_PROVIDER, "provider_id", "not_configured"),
+                    "ai_provider_name": getattr(ACTIVE_AI_PROVIDER, "provider_label", type(ACTIVE_AI_PROVIDER).__name__),
+                })
                 return
             if parsed.path == "/api/metadata":
                 current_year = time.localtime().tm_year
@@ -895,7 +1007,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "보고서 코드가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
                 observations = fetch_workforce_observations(codes, year, report_code)
-                result = WORKFORCE_ORCHESTRATOR.run(observations)
+                request_provider = self.request_openai_provider()
+                workforce_orchestrator = (
+                    WorkforceAgentOrchestrator(provider=request_provider)
+                    if request_provider is not None
+                    else WORKFORCE_ORCHESTRATOR
+                )
+                result = workforce_orchestrator.run(observations)
                 result["source"] = "OpenDART"
                 self.send_json(result)
                 return

@@ -23,6 +23,8 @@ class FrontendVisualContractTests(unittest.TestCase):
             "strategy-hero-companies",
             "DART / WORKFORCE INTELLIGENCE",
             "themeMeta",
+            "strategy-ai-brief",
+            "openAiConnected",
         )
         for marker in required_app_markers:
             with self.subTest(marker=marker):
@@ -44,6 +46,16 @@ class FrontendVisualContractTests(unittest.TestCase):
     def test_ai_entrypoint_and_reference_values_are_not_hardcoded(self) -> None:
         self.assertIn('id="runAiButton"', self.index)
         self.assertIn('id="analysisPrompt"', self.index)
+        self.assertIn('id="openAiApiKey"', self.index)
+        self.assertIn('id="clearAiButton"', self.index)
+        self.assertNotIn('id="connectApiButton"', self.index)
+        self.assertNotIn('class="api-connect-box"', self.index)
+        self.assertGreater(self.index.index('id="openAiApiKey"'), self.index.index("AI HR 브리핑"))
+        self.assertIn("DART HR Briefing", self.index)
+        self.assertIn("AI에게 질문하기", self.index)
+        self.assertIn('"X-OpenAI-API-Key"', self.app)
+        self.assertIn("conversationQuestion", self.app)
+        self.assertNotIn('localstorage.setitem("openai', self.app.lower())
         for forbidden in ("삼성전자", "SK하이닉스", "43.6", "47.2", "1.58", "1.85"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.app)

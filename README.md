@@ -1,10 +1,31 @@
-# DART Workforce Intelligence
+# DART HR Briefing
 
-공시 기반 인력·보상·임원구조 벤치마크를 시각적으로 탐색하는 People Analytics 프로그램입니다. OpenDART API에서 확인 가능한 기업 재무·인력·임원 공시를 같은 기준연도와 보고서 기준으로 묶어, HR 전략 가설을 만들 수 있는 화면으로 정리합니다.
+**DART 기업 인력·보상 비교 브리핑 도구**
+
+OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도와 보고서로 묶어 비교하고, 사용자가 직접 입력한 OpenAI API Key로 근거 기반 HR 브리핑을 이어서 질문할 수 있는 People Analytics 프로그램입니다.
 
 <a href="https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html"><img src="docs/assets/dart-workforce-demo.gif" alt="DART Workforce Intelligence 시연 티저" /></a>
 
 > 실제 앱을 headless Edge로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성한 시연 티저입니다. GIF를 클릭하면 [브라우저용 시연 플레이어](https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html)가 열립니다. [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 별도로 내려받아 재생할 수 있습니다.
+
+## 핵심 기능
+
+- 기업명·종목코드·DART 고유번호 검색 및 최대 8개 기업 비교
+- 재무, 직원 수, 고용 형태, 평균 근속, 평균 급여, 임원구조 통합 조회
+- Overview·Compare·Trend·People·Executives·Strategy Brief 시각화
+- `AI HR 브리핑` 카드에서 OpenAI API Key와 질문을 직접 입력하는 대화형 분석
+- 사실·해석·가설·추가 검증 데이터·KPI를 구분하는 브리핑 규칙
+- CSV 내보내기, Windows 단일 실행파일, Vercel 배포 구성 제공
+
+## 3분 빠른 시작
+
+1. OpenDART에서 발급받은 인증키를 `.env`의 `OPENDART_API_KEY`에 입력합니다.
+2. Windows에서는 `dist\DARTStructure.exe`, 개발 환경에서는 `python server.py`를 실행합니다.
+3. 기업과 기준연도·보고서를 선택하고 **인력·보상 비교**를 누릅니다.
+4. 왼쪽 `AI HR 브리핑` 카드에 본인의 OpenAI API Key와 질문을 입력합니다.
+5. **AI에게 질문하기**를 누르고, 같은 DART 근거를 바탕으로 후속 질문을 이어갑니다.
+
+> 실제 인증키가 들어 있는 `.env`는 Git에서 제외됩니다. OpenAI 키도 저장소나 `localStorage`에 저장하지 않습니다.
 
 ## 이 프로그램으로 무엇을 보나요?
 
@@ -49,9 +70,9 @@
 
 `E` 또는 해칭으로 표시된 값은 DART 확정 공시값이 아니라 최근 공개 추세를 화면에서 단순 연장한 모델 추정입니다. 투자·인사 의사결정용 확정 예측으로 사용하지 않습니다.
 
-## AI 분석 질문은 무엇인가요?
+## AI HR 브리핑은 무엇인가요?
 
-사이드바의 **AI 분석 질문**은 별도의 데이터 입력창이 아니라, 현재 선택 기업의 DART 재무 수치와 People Analytics 집계값에 사용자의 질문을 붙이는 기능입니다. 예를 들면 다음과 같이 입력할 수 있습니다.
+사이드바의 **AI HR 브리핑**은 현재 선택 기업의 DART 재무 수치와 People Analytics 집계값에 사용자의 질문을 결합하는 대화형 기능입니다. 예를 들면 다음과 같이 입력할 수 있습니다.
 
 > 영업이익 증가와 평균 급여 변화가 함께 나타나는 기업과 그렇지 않은 기업을 구분하고, HR 전략 가설·추가 검증 데이터·KPI를 제안해줘.
 
@@ -62,7 +83,11 @@
 - 사용자가 입력한 질문
 - 공시 누락·회계정책 차이·집계값의 한계를 구분하라는 해석 규칙
 
-Claude MCP gateway가 연결되어 있으면 분석 결과를 표시하고, 연결되지 않은 기본 상태에서는 `not_configured`와 함께 복사 가능한 prompt handoff를 보여줍니다. AI는 DART 원자료를 대체하지 않으며, gateway 오류를 성공 결과로 표시하지 않습니다.
+화면 왼쪽의 **AI HR 브리핑** 카드에 사용자의 OpenAI API Key와 질문을 입력하고
+**AI에게 질문하기**를 누르면 OpenAI Responses API가 한국어 HR 브리핑을 생성합니다.
+키는 브라우저 저장소나 서버 설정에 저장하지 않고 AI 생성 요청의 헤더로만 전달됩니다.
+브라우저 탭을 새로 열거나 새로고침하면 키를 다시 입력해야 합니다. AI는 DART
+원자료를 대체하지 않으며 provider 오류를 성공 결과로 표시하지 않습니다.
 
 ## 공개 URL(Vercel)에서 사용하는 방법
 
@@ -70,17 +95,27 @@ Claude MCP gateway가 연결되어 있으면 분석 결과를 표시하고, 연�
 
 1. 운영자가 Vercel 서버 환경변수에 `OPENDART_API_KEY`를 설정합니다. 이 키는 브라우저에 노출하거나 저장소에 커밋하지 않습니다.
 2. 사용자가 Vercel URL에 접속합니다.
-3. 기업명·종목코드·DART 고유번호로 기업을 검색하고, 기준연도와 보고서를 선택한 뒤 **재무구조 비교**를 실행합니다.
+3. 기업명·종목코드·DART 고유번호로 기업을 검색하고, 기준연도와 보고서를 선택한 뒤 **인력·보상 비교**를 실행합니다.
 4. `Overview`, `People`, `Executives`, `Strategy Brief` 탭에서 재무·인력·임원구조 시각화를 확인합니다.
-5. AI 분석 기능을 사용하는 배포 버전에서는 사용자가 본인의 OpenAI API 키를 입력합니다. 키는 URL·로그·DB에 남기지 않고, 분석 요청에만 사용합니다.
+5. 왼쪽 **AI HR 브리핑** 카드에 본인의 `OpenAI API Key`와 질문을 입력하고 **AI에게 질문하기**를 누릅니다.
+6. 첫 답변 뒤에 질문을 계속 입력하면 최근 대화와 같은 기업·연도의 DART 근거를 이어서 전달합니다.
 
-현재 저장소의 AI 기본 연결은 OpenAI가 아니라 선택적인 Claude MCP gateway이며, OpenAI API 키 입력 UI는 별도 OpenAI 어댑터를 연결한 배포 버전에서 활성화합니다. OpenAI 키가 없어도 DART 기반 비교·People·임원·Strategy Brief 시각화는 사용할 수 있어야 하며, AI 자동 해석만 제한됩니다.
+OpenDART 인증키는 Vercel 서버 환경변수에서 읽습니다. 사용자가 입력한 OpenAI 키는
+해당 브라우저 탭의 메모리에만 유지되고 서버에는 저장되지 않습니다. OpenAI 키가
+없어도 DART 기반 비교·People·Executives·Strategy Brief 시각화는 사용할 수 있고
+AI 자동 해석만 제한됩니다.
 
-> 공개 서비스에서는 DART 호출량 제한, 사용자별 요청 제한, API 키 미저장 정책을 함께 적용해야 합니다. 사용자가 입력한 OpenAI 키를 query string이나 프론트엔드 코드에 포함하지 않습니다.
+> 공개 서비스에서는 DART 호출량 제한, 사용자별 요청 제한, API 키 미노출 정책을 함께 적용해야 합니다. 인증키를 query string이나 프론트엔드 코드에 포함하지 않습니다.
+
+배포 준비 파일인 `api/index.py`, `vercel.json`, `.python-version`이 포함되어
+있습니다. GitHub 저장소를 Vercel 프로젝트에 연결한 뒤 `OPENDART_API_KEY`와
+`OPENAI_MODEL`을 서버 환경변수로 등록하면 동일한 앱을 배포할 수 있습니다.
+`OPENAI_API_KEY` 서버 환경변수는 자동화 호출용 선택 사항이며, 일반 사용자는
+AI HR 브리핑 카드에 자신의 키와 질문을 직접 입력합니다.
 
 ## 데이터 범위
 
-현재 프로그램은 공개 OpenDART API만 사용합니다.
+현재 프로그램은 기업 근거 데이터에 공개 OpenDART API를 사용하고, 선택적으로 OpenAI Responses API를 이용해 브리핑을 생성합니다.
 
 - 재무 단일회사 공시: `fnlttSinglAcnt.json`
 - 직원 현황: `empSttus.json`
@@ -100,6 +135,8 @@ Windows 배포 패키지를 실행합니다.
 ```
 
 프로그램은 기본적으로 `http://127.0.0.1:8765`에서 실행됩니다.
+실행파일은 실행파일이 있는 폴더의 `.env`를 먼저 확인하고, PowerShell에서
+실행한 경우 현재 작업 폴더의 `.env`도 확인합니다.
 
 ### 개발 모드
 
@@ -113,14 +150,32 @@ python server.py
 
 개발 환경에 필요한 Python 패키지는 현재 실행 환경에 설치되어 있어야 하며, 배포 실행에는 별도 Python 설치가 필요하지 않습니다.
 
-`.env`의 선택 설정은 별도 Claude MCP gateway가 있을 때만 사용합니다.
+`.env`에는 OpenDART 키를 필수로 넣습니다. AI 브리핑 키는 실행 후 왼쪽 입력란에
+직접 넣는 방식이 기본이며, 자동화 호출이 필요한 경우에만 OpenAI 키를 환경변수로
+선택적으로 추가할 수 있습니다. 별도 Claude MCP gateway가 있는 환경에서는 기존
+gateway 설정을 대체 경로로 사용할 수 있습니다.
 
 ```text
 OPENDART_API_KEY=
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.6-luna
+OPENAI_TIMEOUT_SECONDS=60
+OPENAI_MAX_OUTPUT_TOKENS=1800
 CLAUDE_MCP_GATEWAY_URL=
 CLAUDE_MCP_GATEWAY_TOKEN=
 CLAUDE_MCP_GATEWAY_TIMEOUT_SECONDS=20
 ```
+
+AI HR 브리핑 카드에 OpenAI 키를 입력하면 AI 분석 질문과 Strategy Brief에서 OpenDART
+수치와 출처만을 근거로 한국어 HR 브리핑을 생성합니다. 사용자가 입력한 키는
+서버 응답, 로그, 저장소, `localStorage`에 포함하지 않습니다.
+`OPENAI_MODEL`은 계정에서 사용할 수 있는 Responses API 모델로 바꿀 수
+있습니다. OpenAI 키가 없으면 기존 Claude MCP gateway를 확인하고, 둘 다
+없으면 근거 기반 분석 프롬프트만 반환합니다.
+
+AI 브리핑의 항목과 판단 원칙은 [`HR_BRIEFING_RULES.md`](HR_BRIEFING_RULES.md)에
+분리되어 있습니다. 교육 실습에서는 이 파일을 수정해 브리핑 구조와 추가
+검증 KPI가 어떻게 달라지는지 확인할 수 있습니다.
 
 인증키와 gateway token은 저장소에 커밋하지 않습니다. `.env.example`만 공유용으로 포함합니다.
 
@@ -130,8 +185,8 @@ CLAUDE_MCP_GATEWAY_TIMEOUT_SECONDS=20
 
 ```powershell
 python -m unittest discover -v
-ruff check server.py agent_orchestration.py workforce_analytics.py claude_mcp_adapter.py orchestrator.py test_*.py
-python -m py_compile server.py agent_orchestration.py workforce_analytics.py claude_mcp_adapter.py orchestrator.py
+ruff check server.py agent_orchestration.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestrator.py test_*.py
+python -m py_compile server.py agent_orchestration.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestrator.py
 node --check static/app.js
 ```
 
@@ -145,7 +200,7 @@ node --check static/app.js
 2. 삼성전자·SK하이닉스 DART 비교
 3. KPI·막대 그래프 시각화
 4. Strategy Brief의 이익·급여·Pay Equity 흐름
-5. AI 분석 질문과 Claude MCP prompt handoff
+5. OpenAI API Key 직접 입력과 대화형 AI HR 브리핑
 
 재현하려면 개발 서버를 먼저 실행한 뒤, Node.js·`playwright-core`·Edge·`ffmpeg`가 준비된 환경에서 실행합니다.
 

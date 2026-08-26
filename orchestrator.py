@@ -1,9 +1,9 @@
 """AI analysis orchestration for normalized OpenDART results.
 
 The module intentionally has no network or provider-specific implementation.
-The server can inject a Claude MCP adapter that implements ``ClaudeMCPAdapter``
-when one is configured.  Without an adapter, ``AnalysisOrchestrator`` returns a
-structured prompt handoff and leaves ``provider_result`` as ``None``.
+The server can inject any configured analysis provider.  Without one,
+``AnalysisOrchestrator`` returns a structured prompt handoff and leaves
+``provider_result`` as ``None``.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ MAX_PAGE_SIZE = 500
 
 
 class ClaudeMCPAdapter(Protocol):
-    """Provider boundary for a configured Claude MCP integration.
+    """Backward-compatible provider boundary for an AI integration.
 
     The adapter owns authentication, transport, and provider-specific response
     parsing.  This module only supplies the deterministic prompt and context.
@@ -305,6 +305,7 @@ class AnalysisOrchestrator:
         metric_catalog: Any,
         *,
         adapter: ClaudeMCPAdapter | None = None,
+        extra_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build a handoff and call only an explicitly configured adapter.
 
@@ -315,9 +316,13 @@ class AnalysisOrchestrator:
         """
 
         context = self.build_context(request, dart_results, metric_catalog)
+        if extra_context:
+            context.update(dict(extra_context))
         prompt = build_structured_prompt(context)
         active_adapter = adapter if adapter is not None else self.adapter
         provider_name = type(active_adapter).__name__ if active_adapter is not None else None
+        provider_id = str(getattr(active_adapter, "provider_id", "not_configured"))
+        provider_label = str(getattr(active_adapter, "provider_label", provider_name or "미설정"))
         provider_status = "not_configured"
         provider_result: Any = None
         provider_error: str | None = None
@@ -342,7 +347,7 @@ class AnalysisOrchestrator:
                     provider_status = "completed"
 
         prompt_handoff: dict[str, Any] = {
-            "provider": "claude_mcp",
+            "provider": provider_id,
             "provider_name": provider_name,
             "status": provider_status,
             "prompt": prompt,
@@ -351,10 +356,21 @@ class AnalysisOrchestrator:
         if provider_error is not None:
             prompt_handoff["error"] = provider_error
 
+        provider_payload = {
+            "id": provider_id,
+            "name": provider_label,
+            "status": provider_status,
+            "result": provider_result,
+            "prompt": prompt,
+        }
+        if provider_error is not None:
+            provider_payload["error"] = provider_error
+
         return {
             "context": context,
             "prompt": prompt,
             "prompt_handoff": prompt_handoff,
+            "provider": provider_payload,
             "provider_status": provider_status,
             "provider_result": provider_result,
         }

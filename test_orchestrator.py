@@ -40,6 +40,19 @@ class ErrorResultAdapter:
         return {"status": "error", "error_message": "gateway rejected request"}
 
 
+class CapturingAdapter:
+    configured = True
+    provider_id = "test_provider"
+    provider_label = "Test Provider"
+
+    def __init__(self):
+        self.context = None
+
+    def analyze(self, *, prompt, context):
+        self.context = context
+        return "briefing"
+
+
 class AnalysisOrchestratorTests(unittest.TestCase):
     def setUp(self):
         self.request = AnalysisRequest(
@@ -75,6 +88,19 @@ class AnalysisOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["provider_status"], "error")
         self.assertIsNone(result["provider_result"])
         self.assertIn("gateway rejected request", result["prompt_handoff"]["error"])
+
+    def test_extra_people_context_reaches_provider_before_generation(self):
+        adapter = CapturingAdapter()
+        result = AnalysisOrchestrator(adapter=adapter).run(
+            self.request,
+            dart_result(),
+            METRICS,
+            extra_context={"people_analytics": {"summary": "직원 100명"}},
+        )
+        self.assertEqual(result["provider_status"], "completed")
+        self.assertEqual(result["provider"]["id"], "test_provider")
+        self.assertEqual(adapter.context["people_analytics"]["summary"], "직원 100명")
+        self.assertIn("직원 100명", result["prompt"])
 
 
 if __name__ == "__main__":
