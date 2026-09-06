@@ -1,8 +1,8 @@
 # DART HR Briefing
 
-<p align="center"><a href="docs/assets/dart-workforce-demo.mp4"><img src="docs/assets/dart-workforce-demo.gif" width="100%" alt="DART HR Briefing 근거 추적 시연 영상" /></a></p>
+<p align="center"><a href="docs/assets/dart-hr-briefing-promo.mp4"><img src="docs/assets/dart-hr-briefing-promo.gif" width="100%" alt="DART HR Briefing 공식 홍보영상" /></a></p>
 
-<p align="center"><strong>▶ GIF 티저를 클릭하면 26초 고화질 MP4가 열립니다.</strong> · <a href="docs/demo.html">브라우저용 플레이어</a></p>
+<p align="center"><strong>▶ GIF 티저를 클릭하면 36.2초 Full HD 홍보영상이 열립니다.</strong> · <a href="docs/assets/dart-workforce-demo.mp4">26초 기능 시연</a> · <a href="docs/demo.html">브라우저용 플레이어</a></p>
 
 **DART 기업 인력·보상 비교 브리핑 도구**
 
@@ -20,10 +20,24 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 | 안전장치 | 개인정보·근거·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
 | 검증 | Python 3.12 회귀 테스트 306개, 프론트엔드 JavaScript 구문 검사 |
 | 강의 자료 | 로컬 `training_deck/training_deck.pptx`, 16:9 56장·발표자 노트 56장 |
+| 홍보영상 | [`docs/assets/dart-hr-briefing-promo.mp4`](docs/assets/dart-hr-briefing-promo.mp4), 1920×1080·30fps·36.2초 |
 
 `training_deck/`에는 원본 슬라이드 이미지와 생성 프롬프트까지 포함되어 용량이 크므로 Git과 Vercel 배포에서는 제외합니다. 최종 PPT는 로컬 산출물로 보존하고, 교육 내용과 재현 절차는 저장소의 커리큘럼 문서로 관리합니다.
 
-> 실제 앱을 headless Chrome으로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성했습니다. 기업 선택부터 Strategy Brief의 Run ID·품질 게이트·공시 원문 링크 확인까지 실제 화면으로 보여 줍니다. README의 GIF는 2배속 13초 티저이며 [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 1920×1080·30fps·26.3초입니다.
+## 홍보영상
+
+[공식 홍보영상](docs/assets/dart-hr-briefing-promo.mp4)은 `video-shotcraft`의 Ink Press 10-shot 구조를 제품의 민트·딥그린 디자인 언어로 재구성했습니다. 실제 서비스 화면만 사용해 **기업 선택 → 동일 기준 비교 → Strategy Brief → 근거·품질 게이트 → AI 정책 검증** 흐름을 36.2초에 담았습니다. API 키·개인정보·비공개 데이터는 포함하지 않았으며 BGM 없이 라이선스가 확인된 Mixkit 효과음만 사용했습니다.
+
+- Full HD MP4: [`docs/assets/dart-hr-briefing-promo.mp4`](docs/assets/dart-hr-briefing-promo.mp4)
+- README 티저 GIF: [`docs/assets/dart-hr-briefing-promo.gif`](docs/assets/dart-hr-briefing-promo.gif) — 전체 영상을 2.5배속한 960×540 미리보기
+- 엔딩 포스터: [`docs/assets/dart-hr-briefing-promo-poster.png`](docs/assets/dart-hr-briefing-promo-poster.png)
+- 재현 가능한 Remotion 소스·실제 화면·오디오 출처: [`promo_video/`](promo_video/)
+
+`promo_video/node_modules/`와 렌더 중간 산출물은 Git에서 제외하며,
+`promo_video/` 전체와 `docs/` 미디어는 Vercel 함수 번들에서도 제외합니다.
+따라서 영상 제작 의존성이 운영 배포 용량에 포함되지 않습니다.
+
+별도의 [26초 기능 시연 영상](docs/assets/dart-workforce-demo.mp4)은 실제 앱을 headless Chrome으로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성했습니다. 기업 선택부터 Strategy Brief의 Run ID·품질 게이트·공시 원문 링크 확인까지 실제 조작 흐름을 보여 줍니다.
 
 ## 핵심 기능
 
@@ -35,6 +49,107 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 - `AI HR 브리핑` 카드에서 OpenAI API Key와 질문을 직접 입력하는 대화형 분석
 - 사실·해석·가설·추가 검증 데이터·KPI를 구분하는 브리핑 규칙
 - CSV 내보내기, Windows 단일 실행파일, Vercel 배포 구성 제공
+
+## 시스템 사용 방법
+
+### 1. 실행 방식 선택
+
+| 상황 | 실행 방법 | 키 설정 |
+| --- | --- | --- |
+| 바로 체험 | [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app) 접속 | OpenDART 키는 서버에 구성됨. AI를 쓸 때만 본인의 OpenAI 키 입력 |
+| Windows 단일 실행 | `dist\DARTStructure.exe` 실행 후 표시된 로컬 주소 접속 | 최초 실행 전에 `OPENDART_API_KEY` 환경변수 설정 |
+| 소스 개발 | `python server.py` 실행 후 `http://127.0.0.1:8000` 접속 | 프로젝트 루트 `.env` 사용 |
+
+공개 URL과 로컬 실행 화면이 다르거나 다른 프로그램이 나타나면 먼저
+`/api/health`를 확인합니다. 응답의 `app.id`가 `dart-hr-briefing`이 아니면
+현재 주소·포트를 다른 프로세스가 사용하고 있는 것입니다.
+
+```powershell
+Invoke-RestMethod https://dart-ruby-zeta.vercel.app/api/health
+# 로컬 실행 확인
+Invoke-RestMethod http://127.0.0.1:8000/api/health
+```
+
+### 2. API 키 준비
+
+- **OpenDART API Key** — 기업 검색과 공시 데이터 조회에 필요합니다. 공개 URL에서는 서버가 관리하고, 로컬에서는 `.env`의 `OPENDART_API_KEY`에 입력합니다.
+- **OpenAI API Key** — AI HR 브리핑을 실행할 때만 선택적으로 필요합니다. 화면 왼쪽 입력란에 직접 넣으며 브라우저 저장소나 서버 파일에 저장하지 않습니다.
+- `.env`, 실제 키, 개인·고객 데이터는 Git에 커밋하지 않습니다. `.env.example`에는 변수 이름만 유지합니다.
+
+### 3. 기업 비교 실행
+
+1. 화면 상단에서 **기준연도**와 **보고서**를 선택합니다.
+2. 왼쪽 **기업 추가**에 기업명·종목코드·DART 고유번호를 입력합니다.
+3. 검색 결과를 눌러 1개 이상, 최대 8개 기업을 비교 목록에 넣습니다. `×`를 누르면 제거됩니다.
+4. 비교할 기업은 가능한 한 업종·규모·사업모델이 비슷하도록 구성합니다.
+5. **인력·보상 비교**를 누릅니다. 재무·직원·임원·추이 데이터가 준비될 때까지 버튼의 로딩 상태를 기다립니다.
+6. 상단 데이터 스트립에서 기준연도·보고서·수신 기업 수·근거 준비도·원문 연결 상태를 확인합니다.
+
+> 기준연도, 보고서 또는 기업 목록을 바꾸면 이전 비교·Strategy Brief·AI 대화의
+> 입력 조건이 달라집니다. 화면 안내에 따라 **인력·보상 비교**를 다시 실행하세요.
+
+### 4. 분석 탭 읽기
+
+| 탭 | 확인할 내용 | 해석할 때 주의할 점 |
+| --- | --- | --- |
+| Overview | 전년 대비 변화, 핵심 KPI, 자산·수익성 차트 | 변화가 인력·보상 때문에 발생했다고 단정하지 않음 |
+| Compare | 기업별 재무지표 원값과 비율 | `데이터 없음`을 0으로 해석하지 않음 |
+| Trend | 선택 지표의 연도별 흐름 | 보고서 종류와 공시 기준이 같은지 먼저 확인 |
+| People | 직원 수·고용형태·근속·평균 급여·매출/인 | 공개 집계값이며 개인별 성과나 이직 원인을 포함하지 않음 |
+| Executives | 임원·이사회 구조와 임기 | 승계 위험이나 조직문화를 자동 판정하지 않음 |
+| Strategy Brief | 결정 브리프·이익 체력·People Signal·내부 진단 | readiness와 confidence를 확정 결론으로 사용하지 않음 |
+| Radar | 여러 지표의 선택 집합 내 상대 위치 | 산업·규모 보정 외부 벤치마크가 아님 |
+| Scatter | 두 지표의 상대적 분포 | 상관처럼 보여도 인과관계로 해석하지 않음 |
+| Rank | 선택 지표의 비교 집합 내 순서 | 순위는 선택한 기업과 지표가 바뀌면 달라짐 |
+
+`METRICS`의 지표 버튼을 눌러 차트·표의 표시 항목을 조정할 수 있습니다.
+**초기화**는 기본 재무 지표 묶음으로 되돌립니다. `◐` 버튼은 밝은/어두운 테마를
+전환하며 선택한 테마는 해당 브라우저에 저장됩니다.
+
+### 5. Strategy Brief와 근거 확인
+
+1. **Strategy Brief** 탭에서 생산성·보상 지속가능성·인력구조·리더십 연속성·근거 연결 완전성의 준비도를 확인합니다.
+2. 각 Decision Brief의 대표지표, 선택 기업 중앙값 위치, confidence, 알 수 없는 것과 **다음 판단 행동**을 함께 읽습니다.
+3. `SOURCE LINKS`에서 기업별 DART 원문을 열고 화면 수치와 기준연도·보고서를 대조합니다.
+4. `QUALITY GATE`의 누락·비교 제한과 정정공시 최신성 미검증 경고를 확인합니다.
+5. `TRACE`는 데이터 정규화, 품질 점검, 개인정보·근거·출력 가드의 실행 상태를 보여 줍니다.
+
+`ready`는 자동 의사결정 허가가 아니라 현재 비교 범위에서 근거 연결이 상대적으로
+충분하다는 뜻입니다. 채용·보상·감축·평가·승계 조치를 정하려면 카드에 표시된
+내부 HRIS·평가·보상 원장·설문 데이터를 별도로 확인해야 합니다.
+
+### 6. AI HR 브리핑 사용
+
+1. 기업 비교를 먼저 실행합니다.
+2. 왼쪽 **OpenAI API Key**에 본인의 키를 입력합니다.
+3. 예시 질문을 누르거나 최대 4,000자의 질문을 직접 작성합니다.
+4. **AI에게 질문하기**를 누르거나 입력창에서 `Ctrl+Enter`를 사용합니다.
+5. 답변의 **확인된 사실·해석·가설·추가 검증 데이터·KPI**를 구분해 읽고, 근거 ID와 DART 원문을 대조합니다.
+6. 같은 기업·연도·보고서에서는 후속 질문을 이어갈 수 있습니다. **대화 지우기**는 현재 대화만 초기화합니다.
+7. **분석 프롬프트 복사**는 같은 구조의 근거 중심 질문을 다른 AI 도구에서 재사용할 때 씁니다.
+
+AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 못하면 차단된 원문은
+표시하지 않습니다. 대신 검증된 OpenDART 근거 요약을 보여 주므로 근거 ID와 원문을
+확인한 뒤 질문을 “확인된 수치만”, “인과가 아닌 가설로”처럼 좁혀 다시 요청합니다.
+
+### 7. 결과 저장과 공유
+
+- **CSV 내보내기**는 비교를 실행한 뒤 사용할 수 있으며 기준연도·보고서·기업·전체 지표를 UTF-8 BOM CSV로 저장합니다.
+- **프롬프트 복사**는 수치 자체가 아니라 현재 선택 조건과 근거 중심 분석 지시를 클립보드에 저장합니다.
+- 보고서에 인용할 때는 화면 캡처만 붙이지 말고 기준연도·보고서·기업 집합·DART 원문 링크·데이터 한계를 함께 기록합니다.
+
+### 8. 자주 발생하는 문제
+
+| 증상 | 확인 및 해결 |
+| --- | --- |
+| DART HR Briefing이 아닌 다른 화면이 열림 | `/api/health`의 `app.id` 확인 → 다른 프로세스가 포트를 쓰면 종료하거나 이 서버를 다른 포트로 실행 |
+| 기업 검색 실패 | OpenDART 키 설정, 네트워크, `/api/health`의 `api_key_configured` 확인 |
+| 비교 버튼을 눌러도 진행되지 않음 | 기업을 1개 이상 선택했는지 확인. 연도·보고서 변경 후에는 비교를 다시 실행 |
+| 일부 카드에 `데이터 없음` 표시 | 해당 공시 응답이 없거나 표준화할 수 없는 상태. 0으로 바꾸지 말고 원문·품질 경고 확인 |
+| Strategy Brief가 `directional_only` 또는 `blocked` | 비교 기업 수, 대표지표 표본, 근거 연결과 누락 항목을 확인하고 비교 집합 또는 내부 데이터를 보완 |
+| AI 실행 실패 | OpenAI 키·계정 한도·네트워크를 확인. 결정 브리프와 일반 비교 기능은 AI 없이 계속 사용 가능 |
+| AI 검증 정책 차단 | 화면의 안전한 근거 대체 응답과 차단 항목을 확인한 뒤 질문 범위를 좁힘 |
+| CSV 버튼이 작동하지 않음 | 기업 비교를 먼저 실행하고 브라우저 다운로드 권한 확인 |
 
 ## 3분 빠른 시작
 

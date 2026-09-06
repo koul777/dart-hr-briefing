@@ -1,0 +1,21 @@
+{
+  "name": "dart-hr-briefing-promo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "remotion studio src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "render": "remotion render src/index.ts DARTPromo out/dart-hr-briefing-promo.mp4",
+    "poster": "remotion still src/index.ts DARTPromo out/dart-hr-briefing-promo-poster.png --frame=1040"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.484",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "remotion": "4.0.484"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "typescript": "6.0.3"
+  }
+}

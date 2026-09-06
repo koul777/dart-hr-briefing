@@ -3,6 +3,8 @@ dist/
 docs/
 reports/
 video_work/
+promo_video/
+node_modules/
 data/
 fixtures/
 tools/

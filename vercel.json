@@ -3,7 +3,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 120,
-      "excludeFiles": "{.git/**,.github/**,.vercel/**,.playwright-cli/**,.pytest_cache/**,.ruff_cache/**,__pycache__/**,build/**,data/**,dist/**,docs/**,fixtures/**,reports/**,tools/**,training_deck/**,video_work/**,**/*.egg-info/**,test_*.py,*.exe,*.spec,*.visual-check.*}"
+      "excludeFiles": "{.git/**,.github/**,.vercel/**,.playwright-cli/**,.pytest_cache/**,.ruff_cache/**,__pycache__/**,build/**,data/**,dist/**,docs/**,fixtures/**,node_modules/**,promo_video/**,reports/**,tools/**,training_deck/**,video_work/**,**/*.egg-info/**,test_*.py,*.exe,*.spec,*.visual-check.*}"
     }
   },
   "rewrites": [

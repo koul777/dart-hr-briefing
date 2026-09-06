@@ -24,5 +24,11 @@ docs/assets/dashboard-home-content.png
 reports/overnight_sessions/
 video_work/
 training_deck/
+/promo_video/node_modules/
+/promo_video/out/
+/promo_video/.remotion/
+/.cache/
+/.remotion/
+!docs/assets/dart-hr-briefing-promo.mp4
 
 .vercel
