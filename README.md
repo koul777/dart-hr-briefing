@@ -52,6 +52,8 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 
 ## 시스템 사용 방법
 
+아래 안내 이미지는 모두 실제 서비스 화면입니다. **이미지를 클릭하면 원본 크기로 확대**해 버튼 위치와 수치를 확인할 수 있습니다.
+
 ### 1. 실행 방식 선택
 
 | 상황 | 실행 방법 | 키 설정 |
@@ -71,7 +73,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 ```
 
 <p align="center">
-  <img src="promo_video/public/screens/app-home.png" width="100%" alt="DART HR Briefing 첫 화면과 주요 조작 영역" />
+  <a href="promo_video/public/screens/app-home.png"><img src="promo_video/public/screens/app-home.png" width="100%" alt="DART HR Briefing 첫 화면과 주요 조작 영역" /></a>
   <br><sub><b>화면 1.</b> 상단에서 기준연도·보고서를 정하고, 왼쪽에서 기업 선택과 AI 브리핑을 실행합니다.</sub>
 </p>
 
@@ -91,7 +93,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 6. 상단 데이터 스트립에서 기준연도·보고서·수신 기업 수·근거 준비도·원문 연결 상태를 확인합니다.
 
 <p align="center">
-  <img src="promo_video/public/screens/companies-selected.png" width="48%" alt="삼성전자와 SK하이닉스를 비교 기업으로 선택한 화면" />
+  <a href="promo_video/public/screens/companies-selected.png"><img src="promo_video/public/screens/companies-selected.png" width="48%" alt="삼성전자와 SK하이닉스를 비교 기업으로 선택한 화면" /></a>
   <br><sub><b>화면 2.</b> 비교 기업은 왼쪽 목록에서 확인합니다. 예시는 삼성전자와 SK하이닉스 2개 기업을 선택한 상태입니다.</sub>
 </p>
 
@@ -117,12 +119,12 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 전환하며 선택한 테마는 해당 브라우저에 저장됩니다.
 
 <p align="center">
-  <img src="promo_video/public/screens/tab-overview.png" width="100%" alt="Overview 탭의 핵심 KPI와 비교 차트" />
+  <a href="promo_video/public/screens/tab-overview.png"><img src="promo_video/public/screens/tab-overview.png" width="100%" alt="Overview 탭의 핵심 KPI와 비교 차트" /></a>
   <br><sub><b>화면 3.</b> Overview에서는 전년 대비 변화, 핵심 KPI와 기업별 재무 규모를 먼저 훑습니다.</sub>
 </p>
 
 <p align="center">
-  <img src="promo_video/public/screens/tab-compare.png" width="100%" alt="Compare 탭의 기업별 핵심 재무지표 표" />
+  <a href="promo_video/public/screens/tab-compare.png"><img src="promo_video/public/screens/tab-compare.png" width="100%" alt="Compare 탭의 기업별 핵심 재무지표 표" /></a>
   <br><sub><b>화면 4.</b> Compare에서는 같은 공시 기준의 원값과 비율을 나란히 확인합니다.</sub>
 </p>
 
@@ -135,12 +137,12 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 5. `TRACE`는 데이터 정규화, 품질 점검, 개인정보·근거·출력 가드의 실행 상태를 보여 줍니다.
 
 <p align="center">
-  <img src="promo_video/public/screens/tab-strategy.png" width="100%" alt="Strategy Brief의 보상 대시보드와 Decision Brief" />
+  <a href="promo_video/public/screens/tab-strategy.png"><img src="promo_video/public/screens/tab-strategy.png" width="100%" alt="Strategy Brief의 보상 대시보드와 Decision Brief" /></a>
   <br><sub><b>화면 5.</b> Strategy Brief는 판단 신호와 한계, 다음 확인 행동을 한 카드에서 읽도록 구성했습니다.</sub>
 </p>
 
 <p align="center">
-  <img src="promo_video/public/screens/strategy-evidence.png" width="100%" alt="Strategy Brief의 Source Links, Quality Gate, AI Policy와 Trace" />
+  <a href="promo_video/public/screens/strategy-evidence.png"><img src="promo_video/public/screens/strategy-evidence.png" width="100%" alt="Strategy Brief의 Source Links, Quality Gate, AI Policy와 Trace" /></a>
   <br><sub><b>화면 6.</b> 아래쪽 근거 영역에서 DART 원문, 품질 게이트, AI 정책과 에이전트 실행 이력을 함께 검증합니다.</sub>
 </p>
 
@@ -159,7 +161,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 7. **분석 프롬프트 복사**는 같은 구조의 근거 중심 질문을 다른 AI 도구에서 재사용할 때 씁니다.
 
 <p align="center">
-  <img src="promo_video/public/screens/ai-question-panel.png" width="46%" alt="OpenAI API Key와 질문을 입력하는 AI HR 브리핑 패널" />
+  <a href="promo_video/public/screens/ai-question-panel.png"><img src="promo_video/public/screens/ai-question-panel.png" width="46%" alt="OpenAI API Key와 질문을 입력하는 AI HR 브리핑 패널" /></a>
   <br><sub><b>화면 7.</b> OpenAI 키와 질문은 왼쪽 AI HR 브리핑 패널에 입력합니다. 키는 현재 대화에서만 사용됩니다.</sub>
 </p>
 
