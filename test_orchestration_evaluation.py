@@ -594,6 +594,93 @@ class OrchestrationEvaluationTests(unittest.TestCase):
             evaluation["failures"],
         )
 
+    def test_scorecard_rechecks_tampered_automated_hr_action_policy(self) -> None:
+        result = WorkforceAgentOrchestrator().run([evaluation_observation()])
+        tampered = copy.deepcopy(result)
+        tampered["provider"] = {
+            **tampered["provider"],
+            "status": "completed",
+            "result": "정규직을 줄이고 계약직 채용을 확대해야 합니다.",
+        }
+        tampered["provider_validation"] = {"status": "passed"}
+
+        evaluation = evaluate_orchestration_result(tampered)
+
+        self.assertEqual(evaluation["status"], "failed")
+        self.assertIn(
+            "provider_automated_hr_action_policy_mismatch",
+            evaluation["failures"],
+        )
+
+    def test_scorecard_rechecks_tampered_protected_characteristic_policy(self) -> None:
+        result = WorkforceAgentOrchestrator().run([evaluation_observation()])
+        tampered = copy.deepcopy(result)
+        tampered["provider"] = {
+            **tampered["provider"],
+            "status": "completed",
+            "result": "여성 직원은 성과가 낮으므로 채용 우선순위를 낮춰야 합니다.",
+        }
+        tampered["provider_validation"] = {"status": "passed"}
+
+        evaluation = evaluate_orchestration_result(tampered)
+
+        self.assertEqual(evaluation["status"], "failed")
+        self.assertIn(
+            "provider_protected_characteristic_policy_mismatch",
+            evaluation["failures"],
+        )
+
+    def test_scorecard_rechecks_tampered_uncited_factual_claim(self) -> None:
+        result = WorkforceAgentOrchestrator().run([evaluation_observation()])
+        tampered = copy.deepcopy(result)
+        tampered["provider"] = {
+            **tampered["provider"],
+            "status": "completed",
+            "result": "이사회의 사내이사 비중이 감소했습니다.",
+        }
+        tampered["provider_validation"] = {"status": "passed"}
+
+        evaluation = evaluate_orchestration_result(tampered)
+
+        self.assertEqual(evaluation["status"], "failed")
+        self.assertIn(
+            "provider_factual_claim_without_citation",
+            evaluation["failures"],
+        )
+        self.assertEqual(
+            evaluation["details"]["unsupported_factual_claims"],
+            [{"segment_index": 1, "claim_type": "factual"}],
+        )
+
+    def test_scorecard_allows_explicit_hr_policy_limits_after_recheck(self) -> None:
+        result = WorkforceAgentOrchestrator().run([evaluation_observation()])
+        tampered = copy.deepcopy(result)
+        tampered["provider"] = {
+            **tampered["provider"],
+            "status": "completed",
+            "result": [
+                "성별만으로 개인 성과를 평가할 수 없습니다.",
+                "Gender must not be used as a basis for hiring decisions.",
+            ],
+        }
+        tampered["provider_validation"] = {"status": "passed"}
+
+        evaluation = evaluate_orchestration_result(tampered)
+
+        self.assertNotEqual(evaluation["status"], "failed")
+        self.assertNotIn(
+            "provider_automated_hr_action_policy_mismatch",
+            evaluation["failures"],
+        )
+        self.assertNotIn(
+            "provider_protected_characteristic_policy_mismatch",
+            evaluation["failures"],
+        )
+        self.assertNotIn(
+            "provider_factual_claim_without_citation",
+            evaluation["failures"],
+        )
+
     def test_scorecard_rejects_uncited_numeric_provider_claim(self) -> None:
         result = WorkforceAgentOrchestrator().run([evaluation_observation()])
         tampered = copy.deepcopy(result)

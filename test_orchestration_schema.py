@@ -8,6 +8,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from agent_orchestration import WorkforceAgentOrchestrator
+from classroom_mode import build_classroom_payload
 
 
 ROOT = Path(__file__).resolve().parent
@@ -131,6 +132,41 @@ class OrchestrationSchemaTests(unittest.TestCase):
                 errors = list(self.validator.iter_errors(result))
                 self.assertEqual(errors, [], "\n".join(error.message for error in errors))
                 json.dumps(result, ensure_ascii=False, allow_nan=False)
+
+    def test_reference_mode_is_bound_to_url_kind_and_top_level_source(self) -> None:
+        live = WorkforceAgentOrchestrator().run([schema_observation()])
+        live["source"] = "OpenDART"
+        live["evidence"]["reference_mode"] = "opendart_receipt"
+        live["evidence"]["external_source_links"] = True
+        self.assertEqual(list(self.validator.iter_errors(live)), [])
+
+        wrong_mode = copy.deepcopy(live)
+        wrong_mode["evidence"]["reference_mode"] = "synthetic_fixture_urn"
+        wrong_mode["evidence"]["external_source_links"] = False
+        self.assertTrue(list(self.validator.iter_errors(wrong_mode)))
+
+        classroom = build_classroom_payload()["orchestration"]
+        self.assertEqual(list(self.validator.iter_errors(classroom)), [])
+
+        classroom["evidence"]["ledger"][0]["source_urls"] = [
+            "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000001"
+        ]
+        self.assertTrue(list(self.validator.iter_errors(classroom)))
+
+    def test_schema_rejects_credentials_or_extra_query_fields_in_source_urls(self) -> None:
+        for unsafe_url in (
+            "https://opendart.fss.or.kr/api/list.json?crtfc_key=secret-value",
+            "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000001&api_key=secret",
+            "https://dart.fss.or.kr/dsaf001/main.do?token=secret-value",
+        ):
+            with self.subTest(unsafe_url=unsafe_url):
+                result = WorkforceAgentOrchestrator().run([schema_observation()])
+                result["source"] = "OpenDART"
+                result["evidence"]["reference_mode"] = "opendart_receipt"
+                result["evidence"]["external_source_links"] = True
+                result["evidence"]["ledger"][0]["source_urls"] = [unsafe_url]
+
+                self.assertTrue(list(self.validator.iter_errors(result)))
 
 
 if __name__ == "__main__":

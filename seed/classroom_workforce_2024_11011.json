@@ -1,0 +1,46 @@
+{
+  "fixture_version": 1,
+  "fixture_id": "dart-hr-briefing-classroom-v1",
+  "description": "개인 식별값·실제 기업값·실제 공시 링크를 포함하지 않은 강의용 합성 HR fixture",
+  "provenance": {
+    "authoring_method": "hand-authored synthetic scenario",
+    "source_data_used": false,
+    "third_party_content_used": false,
+    "intended_use": "education_and_software_testing_only",
+    "contains_real_company_data": false,
+    "contains_personal_data": false
+  },
+  "observations": [
+    {
+      "company": {"corp_code": "90000001", "corp_name": "샘플전자", "stock_code": "900001"},
+      "year": "2024",
+      "report_code": "11011",
+      "synthetic_reference_id": "CLASSROOM-90000001",
+      "employee_rows": [
+        {"fo_bbm": "제품", "sexdstn": "전체", "sm": "1200", "rgllbr_co": "1100", "cnttk_co": "100", "avrg_cnwk_sdytrn": "8.5", "fyer_salary_totamt": "90000000000", "jan_salary_am": "75000000"},
+        {"fo_bbm": "서비스", "sexdstn": "전체", "sm": "300", "rgllbr_co": "240", "cnttk_co": "60", "avrg_cnwk_sdytrn": "4.0", "fyer_salary_totamt": "15000000000", "jan_salary_am": "50000000"}
+      ],
+      "executive_rows": [
+        {"sexdstn": "여", "ofcps": "대표이사", "rgist_exctv_at": "등기임원", "fte_at": "상근", "hffc_pd": "72개월", "tenure_end_on": "2026년 03월 31일", "stlm_dt": "2024-12-31"},
+        {"sexdstn": "남", "ofcps": "사외이사", "rgist_exctv_at": "등기임원", "fte_at": "비상근", "hffc_pd": "24개월", "tenure_end_on": "2025년 03월 31일", "stlm_dt": "2024-12-31"}
+      ],
+      "unregistered_pay_rows": [
+        {"nmpr": "4", "fyer_salary_totamt": "640000000", "jan_salary_am": "160000000"}
+      ],
+      "financials": {"assets": 5000000000000, "liabilities": 1800000000000, "equity": 3200000000000, "current_assets": 1900000000000, "current_liabilities": 900000000000, "cash": 700000000000, "revenue": 4200000000000, "operating_profit": 520000000000, "net_income": 410000000000}
+    },
+    {
+      "company": {"corp_code": "90000002", "corp_name": "샘플플랫폼", "stock_code": "900002"},
+      "year": "2024",
+      "report_code": "11011",
+      "synthetic_reference_id": "CLASSROOM-90000002",
+      "employee_rows": [
+        {"fo_bbm": "플랫폼", "sexdstn": "남", "sm": "420", "rgllbr_co": "400", "cnttk_co": "20", "avrg_cnwk_sdytrn": "6년 3개월", "fyer_salary_totamt": "37800000000", "jan_salary_am": "90000000"},
+        {"fo_bbm": "플랫폼", "sexdstn": "여", "sm": "280", "rgllbr_co": "260", "cnttk_co": "20", "avrg_cnwk_sdytrn": "5년 9개월", "fyer_salary_totamt": "23520000000", "jan_salary_am": "84000000"}
+      ],
+      "executive_rows": [],
+      "unregistered_pay_rows": [],
+      "financials": {"assets": 2200000000000, "liabilities": 600000000000, "equity": 1600000000000, "current_assets": 1200000000000, "current_liabilities": 300000000000, "cash": 800000000000, "revenue": 1500000000000, "operating_profit": 240000000000, "net_income": 190000000000}
+    }
+  ]
+}

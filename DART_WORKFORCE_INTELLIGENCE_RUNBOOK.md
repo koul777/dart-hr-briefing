@@ -6,10 +6,10 @@
 
 `dist/DARTStructure.exe`
 
-로컬 감사 원본은 `reports/overnight_sessions/build-p0-startup-20260906/dist/DARTStructure.exe`이며
+로컬 감사 원본은 `reports/overnight_sessions/build-release-20260907-v7/dist/DARTStructure.exe`이며
 `reports/overnight_sessions/latest-candidate-build-path.txt`가 이 빌드 루트를 가리킨다. 이 경로는
 세션 산출물이라 Git에서 제외되지만, strict packaged smoke를 통과한 동일 바이너리를 공개 경로로 승격했으며
-후보와 루트 배포 파일의 SHA-256은 `1274728D2222FF16A28441E563FD415A83933250DFEC51319C67EB0760DDA824`로 일치한다.
+후보와 루트 배포 파일의 SHA-256은 `E9A4AA57E88C5124EAAA9C3600AF935B13F6A406FBAD91835E03D07A68320160`으로 일치한다.
 격리 후보를 실행할 때 OpenDART 키는 프로세스 환경변수로 주입하거나 실행 파일과 같은
 `dist` 폴더의 `.env`에 둔다.
 
@@ -96,17 +96,17 @@ CLAUDE_MCP_GATEWAY_TIMEOUT_SECONDS=20
 
 ## 5. 품질 기준
 
-- `py -3.12 -m unittest discover -v`: 302개 테스트 통과
-- `py -3.12 -m coverage run --branch -m unittest discover` 후 `py -3.12 -m coverage report -m`: 제품 모듈 branch 84%, 핵심 v2 DAG 92%
-- `py -3.12 tools/benchmark_orchestration.py --iterations 1000 --warmups 50`: provider·network 없이 p50 8.882ms, p95 11.303ms, max 15.999ms, 최대 응답 147,413 bytes 예산 확인
-- `ruff check .`: 통과
-- `python -m compileall -q .`: 통과
+- `py -3.12 -m unittest discover -v`: 전체 451건 회귀 테스트 통과
+- `py -3.12 -m coverage run -m unittest discover` 후 `py -3.12 -m coverage report -m --fail-under=80`: 전체 86%, 핵심 v2 DAG 93%
+- `py -3.12 tools/benchmark_orchestration.py --iterations 1500 --warmups 10 --max-p95-ms 250`: provider·network 없이 p50 5.833ms, p95 7.907ms, max 14.165ms, 최대 응답 148,041 bytes·근거 58건 예산 확인
+- `ruff check . --select E4,E7,E9,F`: 통과
+- 릴리스 모듈 `python -m py_compile`: 통과
 - `node --check static/app.js` 및 `node --check tools/qa_orchestration_v2.js`: 통과
-- 새 Python 3.12 venv에서 `python -m pip install -e ".[dev]"` 후 전체 302개 테스트와 `api.index`·`server` import 통과
-- `pip-audit` 프로젝트 감사: Python 의존성 6개, 알려진 취약점 0건; `reports/overnight_sessions/sbom-cyclonedx-final.json` 생성
-- `py -3.12 tools/packaged_runtime_smoke.py --exe dist/DARTStructure.exe --working-directory reports/overnight_sessions/smoke-p0-startup-20260906 --port 8784 --year 2024 --strict-schema`: 앱 ID·버전·빌드·인스턴스 식별, health ok, root HTML 응답, schema v2, evidence 41/41건 원문 연결, 결정 브리프 3개·readiness 5개·지표평가 6개 확인
-- `python tools/artifact_manifest.py --include-session-artifacts --output reports/overnight_sessions/artifact-manifest-final.json`: 최종 후보·matching smoke·benchmark·runtime audit SHA-256 묶음 생성
-- 이번 HR Analytics 최대화 변경분은 Python 3.11·3.12·3.13·3.14에서 전체 회귀를 검증했고 strict packaged smoke를 별도로 확인했다. 지원 Python 버전별 매트릭스는 CI가 동일 302개 계약을 실행해야 한다.
+- 새 Python 3.12 venv에서 `python -m pip install -e ".[dev]"` 후 전체 회귀와 `api.index`·`server` import 통과
+- `pip-audit` 프로젝트 감사: 잠금 환경에서 알려진 취약점 0건; 최종 v7 SBOM을 세션 산출물로 생성
+- `py -3.12 tools/packaged_runtime_smoke.py --exe dist/DARTStructure.exe --working-directory . --port 8795 --year 2024 --strict-schema`: 앱 ID·버전·불변 SHA build ID·인스턴스 식별, health ok, root HTML 응답, 합성 교실 evidence 58/58건·실제 삼성전자 evidence 41/41건 원문 연결, schema v2, 결정 브리프 3개·readiness 5개·지표평가 6개 확인
+- `python tools/artifact_manifest.py --include-session-artifacts --output reports/overnight_sessions/artifact-manifest-overnight-release-v7.json`: 최종 후보·matching smoke·benchmark·coverage·SBOM·runtime audit SHA-256 묶음 생성
+- 이번 HR Analytics 최대화 변경분은 Python 3.11·3.12·3.13·3.14에서 전체 회귀를 검증했고 strict packaged smoke를 별도로 확인했다. 지원 Python 버전별 매트릭스는 CI가 동일한 전체 계약을 실행해야 한다. 테스트 개수는 변경될 수 있으므로 고정 숫자가 아니라 종료 코드와 실패 내역으로 판정한다.
 - headless Edge 4개사 QA: Overview readiness preload·3개 결정 브리프·5개 readiness·`ready + low` 회사별 품질 원인·대표/후보 지표·근거 링크·unsafe URL 비링크·숫자 경계·People 부분 커버리지·키보드 탭·원자적 비교 커밋·stale/기간 변경 AI 취소·첫 요청 API 키·CSV 수식 경계·다크/390px 모바일 확인
 - JSON·정적 응답은 `Strict-Transport-Security: max-age=31536000`, `nosniff`, `no-referrer`, `DENY`, `Permissions-Policy`를 내보내며 정적 자산에는 CSP도 적용한다.
 
@@ -131,6 +131,9 @@ DART_CACHE_MAX_BYTES=67108864
 DART_DATA_DIR=
 DART_RETRY_ATTEMPTS=3
 DART_RETRY_BASE_DELAY_MS=250
+DART_REQUEST_TIMEOUT_SECONDS=10
+DART_OUTBOUND_DEADLINE_SECONDS=35
+DART_OUTBOUND_ATTEMPT_BUDGET=48
 DART_RATE_LIMIT_PER_MINUTE=30
 DART_RATE_LIMIT_MAX_CLIENTS=4096
 DART_OPEN_BROWSER=true
@@ -144,6 +147,12 @@ DART_STRICT_ORCHESTRATION_SCHEMA=true
 남기지 않는다. 오류 응답과 서버 로그는 공통 `X-Request-ID`로 연계하고 내부 예외 상세와
 인증 값은 공개 응답에 포함하지 않는다.
 
+각 HTTP 요청은 OpenDART outbound 전체에 35초·실제 네트워크 시도 48회의 공유 예산을 사용한다.
+캐시 hit는 예산을 소모하지 않으며 개별 시도는 최대 10초, endpoint별 호출은 최초 요청을
+포함해 최대 3회(재시도 최대 2회)다.
+예산이 끝나면 완료된 기업·연도는 유지하고 나머지는 범위 축소·재시도 안내가 포함된 부분 결과로
+격리한다. `/api/health.runtime.outbound_deadline`에서 현재 값을 확인한다.
+
 캐시와 요청 제한의 `scope`는 `per_process`다. 따라서 serverless 다중 인스턴스 전체에 대한
 분산 제한으로 간주하면 안 된다. 공개 배포에서는 외부 저장소/API gateway 기반 rate limit과
 비용 예산을 추가한 뒤 트래픽을 개방한다.
@@ -153,3 +162,35 @@ DART_STRICT_ORCHESTRATION_SCHEMA=true
 `response_guard`의 evidence·결정지원 참조 무결성 검사는 설정과 무관하게 계속 실행된다.
 
 서버·CI·smoke처럼 브라우저 자동 실행이 불필요하면 `DART_OPEN_BROWSER=false`로 설정한다.
+
+## 7. 교육 운영 골든패스
+
+강의에서는 합성 fixture로 데이터 구조·결측·근거 흐름을 먼저 설명한 뒤 실제 OpenDART 조회로
+넘어간다. 실제 조회 예시는 삼성전자·SK하이닉스처럼 공개된 기업 단위 공시만 사용한다.
+
+실제 직원·지원자의 이름, 연락처, 이메일, 주민·사번, 이력서, 평가·보상 원장, 건강·노조 정보 등
+개인 단위 HR 데이터는 프롬프트, fixture, 테스트, 로그, CSV, 화면 캡처에 입력하지 않는다.
+기업 집계값도 개인 평가나 자동 채용·보상·감축·승계 결정의 근거로 사용하지 않는다.
+
+수업 전 읽기 전용 점검은 다음 명령으로 실행한다.
+
+```powershell
+py -3.12 tools/classroom_preflight.py
+```
+
+서버 실행 뒤 외부 호출이 없는 합성 계약은 다음 경로에서 확인한다.
+
+```powershell
+$sample = Invoke-RestMethod http://127.0.0.1:8765/api/classroom/bootstrap
+$sample.sample
+```
+
+`enabled=True`, `network_requests=0`, `contains_real_company_data=False`,
+`contains_personal_data=False`, `watermark="SAMPLE — SYNTHETIC DATA"`가 기준이다. 일반 화면에 샘플
+전환 UI가 없는 릴리스에서는 이 JSON 응답과 준비된 화면 캡처를 사용하며 존재하지 않는 버튼을
+안내하지 않는다.
+
+기본 주소는 `http://127.0.0.1:8765`, health의 올바른 앱 ID는
+`kr.opendart.dart-hr-briefing`이다. 참가자 골든패스와 장애 복구는
+[`docs/PARTICIPANT_PREFLIGHT.md`](docs/PARTICIPANT_PREFLIGHT.md), m0~m4 진행·시간 통제·평가와
+드레스리허설은 [`docs/INSTRUCTOR_RUNBOOK.md`](docs/INSTRUCTOR_RUNBOOK.md)를 기준으로 한다.

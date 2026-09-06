@@ -61,8 +61,88 @@
         "snapshots": {
           "type": "array",
           "items": {"$ref": "#/$defs/sourceSnapshot"}
+        },
+        "reference_mode": {
+          "enum": ["opendart_receipt", "synthetic_fixture_urn"]
+        },
+        "external_source_links": {"type": "boolean"},
+        "source_notice": {"type": "string", "maxLength": 500}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "reference_mode": {"const": "synthetic_fixture_urn"}
+            },
+            "required": ["reference_mode"]
+          },
+          "then": {
+            "required": ["external_source_links"],
+            "properties": {
+              "external_source_links": {"const": false},
+              "ledger": {
+                "items": {
+                  "properties": {
+                    "source_urls": {"$ref": "#/$defs/syntheticSourceUrls"},
+                    "receipt_numbers": {"maxItems": 0}
+                  }
+                }
+              },
+              "snapshots": {
+                "items": {
+                  "properties": {
+                    "source_urls": {"$ref": "#/$defs/syntheticSourceUrls"},
+                    "receipt_numbers": {"maxItems": 0},
+                    "sources_by_component": {
+                      "additionalProperties": {
+                        "properties": {
+                          "source_urls": {"$ref": "#/$defs/syntheticSourceUrls"},
+                          "receipt_numbers": {"maxItems": 0}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reference_mode": {"const": "opendart_receipt"}
+            },
+            "required": ["reference_mode"]
+          },
+          "then": {
+            "required": ["external_source_links"],
+            "properties": {
+              "external_source_links": {"const": true},
+              "ledger": {
+                "items": {
+                  "properties": {
+                    "source_urls": {"$ref": "#/$defs/openDartSourceUrls"}
+                  }
+                }
+              },
+              "snapshots": {
+                "items": {
+                  "properties": {
+                    "source_urls": {"$ref": "#/$defs/openDartSourceUrls"},
+                    "sources_by_component": {
+                      "additionalProperties": {
+                        "properties": {
+                          "source_urls": {"$ref": "#/$defs/openDartSourceUrls"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
-      }
+      ]
     },
     "decision_support": {"$ref": "#/$defs/decisionSupport"},
     "privacy": {
@@ -117,8 +197,44 @@
       },
       "additionalProperties": false
     },
-    "source": {"const": "OpenDART"}
+    "source": {"enum": ["OpenDART", "synthetic_fixture"]}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"source": {"const": "OpenDART"}},
+        "required": ["source"]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "required": ["reference_mode", "external_source_links"],
+            "properties": {
+              "reference_mode": {"const": "opendart_receipt"},
+              "external_source_links": {"const": true}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"source": {"const": "synthetic_fixture"}},
+        "required": ["source"]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "required": ["reference_mode", "external_source_links"],
+            "properties": {
+              "reference_mode": {"const": "synthetic_fixture_urn"},
+              "external_source_links": {"const": false}
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": false,
   "$defs": {
     "evidenceSummary": {
@@ -431,7 +547,26 @@
       "type": "array",
       "items": {
         "type": "string",
-        "pattern": "^https://(?:dart|opendart)\\.fss\\.or\\.kr/"
+        "oneOf": [
+          {"pattern": "^https://dart\\.fss\\.or\\.kr/dsaf001/main\\.do\\?rcpNo=[0-9]{14}$"},
+          {"pattern": "^urn:dart-hr-briefing:synthetic:classroom-9[0-9]{7}$"}
+        ]
+      },
+      "uniqueItems": true
+    },
+    "openDartSourceUrls": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^https://dart\\.fss\\.or\\.kr/dsaf001/main\\.do\\?rcpNo=[0-9]{14}$"
+      },
+      "uniqueItems": true
+    },
+    "syntheticSourceUrls": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^urn:dart-hr-briefing:synthetic:classroom-9[0-9]{7}$"
       },
       "uniqueItems": true
     },

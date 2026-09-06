@@ -421,6 +421,50 @@ class WorkforceAnalyticsTests(unittest.TestCase):
         self.assertIsNone(result["metrics"]["female_executives"])
         self.assertIsNone(result["metrics"]["female_share"])
         self.assertIn("sexdstn", result["quality"]["missing_fields"])
+
+    def test_unknown_executive_gender_does_not_become_false_zero(self):
+        rows = [
+            {
+                "rgist_exctv_at": "등기임원",
+                "fte_at": "상근",
+                "ofcps": "이사",
+                "sexdstn": "미상",
+                "hffc_pd": "12개월",
+                "tenure_end_on": "2025-12-31",
+            }
+        ]
+
+        result = summarize_executives(rows, as_of=date(2025, 1, 1))
+
+        self.assertIsNone(result["metrics"]["female_executives"])
+        self.assertIsNone(result["metrics"]["female_share"])
+        self.assertEqual(result["quality"]["status"], "partial")
+        self.assertIn(
+            "gender_partial_executive_count",
+            result["quality"]["warnings"],
+        )
+
+    def test_unknown_employment_kind_does_not_become_false_zero(self):
+        rows = [
+            {
+                "rgist_exctv_at": "등기임원",
+                "fte_at": "미상",
+                "ofcps": "이사",
+                "sexdstn": "남",
+                "hffc_pd": "12개월",
+                "tenure_end_on": "2025-12-31",
+            }
+        ]
+
+        result = summarize_executives(rows, as_of=date(2025, 1, 1))
+
+        self.assertIsNone(result["metrics"]["full_time_executives"])
+        self.assertIsNone(result["metrics"]["part_time_executives"])
+        self.assertEqual(result["quality"]["status"], "partial")
+        self.assertIn(
+            "employment_partial_executive_count",
+            result["quality"]["warnings"],
+        )
         self.assertNotIn("ofcps", result["quality"]["missing_fields"])
         self.assertEqual(result["quality"]["status"], "partial")
 

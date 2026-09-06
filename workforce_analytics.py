@@ -486,7 +486,28 @@ def _is_ceo(row: Mapping[str, Any]) -> bool:
 
 
 def _is_female(row: Mapping[str, Any]) -> bool:
-    return clean_text(row.get("sexdstn")).casefold() in {"여", "여성", "female"}
+    return clean_text(row.get("sexdstn")).casefold() in {
+        "f",
+        "female",
+        "여",
+        "여성",
+        "여자",
+    }
+
+
+def _gender_kind_known(row: Mapping[str, Any]) -> bool:
+    return clean_text(row.get("sexdstn")).casefold() in {
+        "f",
+        "female",
+        "m",
+        "male",
+        "남",
+        "남성",
+        "남자",
+        "여",
+        "여성",
+        "여자",
+    }
 
 
 def _is_full_time(row: Mapping[str, Any]) -> bool:
@@ -496,6 +517,10 @@ def _is_full_time(row: Mapping[str, Any]) -> bool:
 
 def _is_part_time(row: Mapping[str, Any]) -> bool:
     return "비상근" in clean_text(row.get("fte_at"))
+
+
+def _employment_kind_known(row: Mapping[str, Any]) -> bool:
+    return _is_full_time(row) or _is_part_time(row)
 
 
 def summarize_executives(
@@ -513,11 +538,9 @@ def summarize_executives(
         for row in valid
     )
     employment_complete = bool(valid) and all(
-        clean_text(row.get("fte_at")) for row in valid
+        _employment_kind_known(row) for row in valid
     )
-    gender_complete = bool(valid) and all(
-        clean_text(row.get("sexdstn")) for row in valid
-    )
+    gender_complete = bool(valid) and all(_gender_kind_known(row) for row in valid)
     registered_rows = [row for row in valid if _is_registered(row.get("rgist_exctv_at"))]
     tenure_values = [parse_months(row.get("hffc_pd")) for row in valid]
     tenure_values = [value for value in tenure_values if value is not None and value >= 0]

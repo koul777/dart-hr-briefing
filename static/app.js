@@ -1,11 +1,16 @@
 const MAX_COMPANIES = 8;
 const MAX_ANALYSIS_QUESTION_CHARS = 4000;
+const API_REQUEST_TIMEOUT_MS = 45_000;
 const EXPECTED_APP_ID = "kr.opendart.dart-hr-briefing";
 const DEFAULT_HR_ANALYSIS_QUESTION = "선택 기업의 인력 생산성·보상 지속가능성·인력구조 차이를 비교하고, 판단 한계와 다음 내부 데이터를 설명해줘";
+const LIVE_AI_TRANSFER_NOTICE = "질문과 공개 기업 집계가 이 서버를 거쳐 선택한 AI 제공자에 전송됩니다. 실제 직원·지원자 개인정보는 입력하지 않습니다.";
+const SAMPLE_AI_TRANSFER_NOTICE = "합성 모드에서는 외부 AI 제공자를 사용하지 않으며 질문과 데이터가 외부로 전송되지 않습니다. 동의가 필요하지 않아 체크박스를 잠갔습니다.";
+const LOADING_AI_TRANSFER_NOTICE = "합성 fixture를 불러오는 동안 AI 제공자 전송 동의를 잠시 사용할 수 없습니다.";
 
 const state = {
   dartApiReady: false,
   appIdentity: null,
+  healthError: "",
   openAiKey: "",
   openAiConnected: false,
   openAiProviderName: "",
@@ -18,11 +23,21 @@ const state = {
   peopleHistory: [],
   executives: [],
   orchestration: null,
+  classroomMode: false,
+  classroomLoading: false,
+  classroomSample: null,
+  classroomRequestToken: 0,
+  classroomAbortController: null,
+  promptRequestToken: 0,
+  promptAbortController: null,
+  livePeriodBeforeClassroom: null,
   strategyLoading: false,
   strategyLoadedFor: "",
   strategyRequestToken: 0,
   compareRequestToken: 0,
   aiRequestToken: 0,
+  compareAbortController: null,
+  strategyAbortController: null,
   aiAbortController: null,
   peopleError: "",
   executivesError: "",
@@ -107,15 +122,105 @@ const providerViolationLabels = {
   unknown_evidence_citation: "확인되지 않은 근거 ID 인용",
   contradictory_numeric_citation: "수치와 인용 근거 불일치",
   uncited_numeric_claim: "근거 ID 없는 수치 주장",
+  uncited_factual_claim: "근거 ID 없는 사실 주장",
+  automated_hr_action_recommendation: "자동 인사조치 권고",
+  protected_characteristic_judgment: "보호 특성에 근거한 개인 판단",
   invalid_provider_output: "응답 형식 검증 실패",
   provider_guard_incomplete: "안전 검증 절차 미완료",
 };
 
 function setMessage(text = "") { $("#message").textContent = text; }
 function aiRequestHeaders(headers = {}) { return state.openAiKey ? { ...headers, "X-OpenAI-API-Key": state.openAiKey } : headers; }
+class ApiRequestError extends Error {
+  constructor(message, { kind = "request", requestId = "" } = {}) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.kind = kind;
+    this.requestId = requestId;
+  }
+}
+function boundedRequestId(value) {
+  const requestId = String(value || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId) ? requestId : "";
+}
+function withRequestId(message, requestId) {
+  return requestId ? `${message} · 요청 ID ${requestId}` : message;
+}
+async function fetchJsonWithDeadline(resource, options = {}) {
+  const requestOptions = { ...options };
+  const parentSignal = requestOptions.signal;
+  delete requestOptions.signal;
+  const controller = new AbortController();
+  let timedOut = false;
+  let requestId = "";
+  const relayAbort = () => controller.abort();
+  if (parentSignal?.aborted) controller.abort();
+  else parentSignal?.addEventListener("abort", relayAbort, { once: true });
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, API_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(resource, { ...requestOptions, signal: controller.signal });
+    requestId = boundedRequestId(response.headers.get("X-Request-ID"));
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (_) {
+      throw new ApiRequestError(
+        withRequestId("서버 응답을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요.", requestId),
+        { kind: "invalid_response", requestId },
+      );
+    }
+    requestId = boundedRequestId(payload?.request_id) || requestId;
+    if (requestId && payload && typeof payload === "object" && !Array.isArray(payload) && !payload.request_id) {
+      payload.request_id = requestId;
+    }
+    if (!response.ok) {
+      throw new ApiRequestError(
+        withRequestId(payload?.error || "서버 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.", requestId),
+        { kind: "http", requestId },
+      );
+    }
+    return payload;
+  } catch (error) {
+    if (error instanceof ApiRequestError) throw error;
+    if (timedOut) {
+      throw new ApiRequestError(
+        withRequestId("요청 시간이 초과되었습니다. 잠시 후 다시 시도하거나 교육용 샘플 모드를 사용해 주세요.", requestId),
+        { kind: "timeout", requestId },
+      );
+    }
+    if (parentSignal?.aborted || controller.signal.aborted || error?.name === "AbortError") {
+      throw new ApiRequestError(
+        withRequestId("요청이 취소되었습니다. 변경한 조건으로 다시 실행해 주세요.", requestId),
+        { kind: "aborted", requestId },
+      );
+    }
+    throw new ApiRequestError(
+      withRequestId("서버에 연결하지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.", requestId),
+      { kind: "network", requestId },
+    );
+  } finally {
+    clearTimeout(timeoutId);
+    parentSignal?.removeEventListener("abort", relayAbort);
+  }
+}
 function renderApiConnection(message = "", isError = false) {
   const connectionState = $("#apiConnectState");
   const help = $("#apiConnectHelp");
+  if (state.classroomMode) {
+    connectionState.dataset.state = "ready";
+    connectionState.innerHTML = "<i></i> 합성 브리핑";
+    help.classList.remove("error");
+    help.textContent = message || "외부 AI로 전송하지 않고 합성 fixture에서 결정론적으로 생성합니다.";
+    const status = $("#apiStatus");
+    status.classList.remove("error");
+    status.classList.add("ready");
+    status.innerHTML = "<i></i> SAMPLE · 외부 호출 없음";
+    status.title = "합성 fixture 기반 교실 모드 · OpenDART·AI 외부 호출 없음";
+    return;
+  }
   const connected = state.openAiConnected && Boolean(state.openAiKey);
   connectionState.dataset.state = connected ? "ready" : "idle";
   connectionState.innerHTML = connected ? "<i></i> 연결됨" : "<i></i> API Key";
@@ -132,6 +237,19 @@ function renderApiConnection(message = "", isError = false) {
     : "서버 식별 확인 중";
   status.title = `${connected ? state.openAiProviderName : "AI HR 브리핑에 OpenAI API Key를 입력해 주세요."} · ${appLabel}`;
 }
+function renderHealthFailure() {
+  if (state.classroomMode) return;
+  const message = state.healthError || "잠시 후 다시 시도해 주세요.";
+  const buildInfo = $("#appBuildInfo");
+  buildInfo.textContent = message;
+  buildInfo.title = "서버 health 확인 실패";
+  const status = $("#apiStatus");
+  status.classList.remove("ready");
+  status.classList.add("error");
+  status.innerHTML = "<i></i> 서버 연결 필요";
+  status.title = message;
+  setMessage(`서버 상태를 확인하지 못했습니다. ${message}`);
+}
 function renderAiConversation(pendingQuestion = "") {
   const resultBox = $("#aiResult");
   const messages = [...state.aiMessages];
@@ -147,7 +265,8 @@ function renderAiConversation(pendingQuestion = "") {
     const content = message.role === "assistant" && Array.isArray(message.evidence)
       ? renderEvidenceText(message.content, message.evidence)
       : escapeHtml(message.content);
-    return `<div class="ai-chat-message ${message.role}${message.pending ? " pending" : ""}"><strong>${message.role === "user" ? "나" : "AI"}</strong><span>${content}</span></div>`;
+    const speaker = message.label || (message.role === "user" ? "나" : "AI");
+    return `<div class="ai-chat-message ${message.role}${message.pending ? " pending" : ""}"><strong>${escapeHtml(speaker)}</strong><span>${content}</span></div>`;
   }).join("");
   resultBox.scrollTop = resultBox.scrollHeight;
   updateWorkshopProgress();
@@ -159,10 +278,222 @@ function cancelAiRequest() {
   const button = $("#runAiButton");
   if (button) {
     button.disabled = false;
-    button.textContent = "AI에게 질문하기 ↗";
+    button.textContent = state.classroomMode ? "합성 결정 브리핑 만들기" : "AI에게 질문하기 ↗";
   }
   renderAiConversation();
   renderApiConnection();
+}
+function cancelCompareRequest() {
+  state.compareAbortController?.abort();
+  state.compareAbortController = null;
+}
+function cancelStrategyRequest() {
+  state.strategyAbortController?.abort();
+  state.strategyAbortController = null;
+}
+function cancelClassroomRequest() {
+  state.classroomAbortController?.abort();
+  state.classroomAbortController = null;
+}
+function cancelPromptRequest() {
+  state.promptAbortController?.abort();
+  state.promptAbortController = null;
+}
+function renderClassroomMode() {
+  const enabled = state.classroomMode;
+  const locked = enabled || state.classroomLoading;
+  const banner = $("#sampleBanner");
+  const consent = $("#aiTransferConsent");
+  const consentBoundary = $("#aiTransferBoundary");
+  const classroomButton = $("#loadClassroomButton");
+  banner.classList.toggle("hidden", !enabled);
+  document.body.classList.toggle("sample-mode", enabled);
+  const briefingTitle = document.querySelector(".prompt-box-title h3");
+  if (briefingTitle) briefingTitle.textContent = enabled ? "합성 결정 브리핑" : "AI HR 브리핑";
+  $("#dataSourceLabel").textContent = enabled ? "합성 fixture · 원문 링크 없음" : "OpenDART 원문";
+  classroomButton.disabled = locked;
+  classroomButton.setAttribute("aria-disabled", String(locked));
+  classroomButton.setAttribute("aria-busy", String(state.classroomLoading));
+  $("#companySearch").disabled = locked;
+  $("#yearSelect").disabled = locked;
+  $("#reportSelect").disabled = locked;
+  $("#openAiApiKey").disabled = locked;
+  $("#toggleApiKey").disabled = locked;
+  consent.disabled = locked;
+  consent.setAttribute("aria-disabled", String(locked));
+  consentBoundary.textContent = enabled
+    ? SAMPLE_AI_TRANSFER_NOTICE
+    : state.classroomLoading
+      ? LOADING_AI_TRANSFER_NOTICE
+      : LIVE_AI_TRANSFER_NOTICE;
+  ["companySearch", "yearSelect", "reportSelect", "toggleApiKey"].forEach((id) => {
+    const control = $(`#${id}`);
+    if (enabled) control.setAttribute("aria-describedby", "sampleModeBoundary");
+    else control.removeAttribute("aria-describedby");
+  });
+  $("#openAiApiKey").setAttribute(
+    "aria-describedby",
+    enabled ? "apiConnectHelp sampleModeBoundary" : "apiConnectHelp",
+  );
+  $("#compareButton").disabled = state.classroomLoading;
+  $("#runAiButton").disabled = state.classroomLoading;
+  $("#runAiButton").textContent = enabled ? "합성 결정 브리핑 만들기" : "AI에게 질문하기 ↗";
+  if (enabled) {
+    banner.querySelector("strong").textContent = state.classroomSample?.watermark || "SAMPLE — SYNTHETIC DATA";
+    $("#sampleModeBoundary").textContent = "실제 기업·개인 데이터가 아니며 외부 OpenDART·AI 호출 없이 동작합니다.";
+  }
+  renderApiConnection();
+}
+function normalizeClassroomPayload(payload) {
+  const sample = payload?.sample;
+  const arrayFields = ["companies", "results", "previous", "history", "people", "people_history"];
+  const validSample = sample?.enabled === true
+    && sample.network_requests === 0
+    && sample.contains_real_company_data === false
+    && sample.contains_personal_data === false;
+  if (!validSample || arrayFields.some((field) => !Array.isArray(payload?.[field]))) {
+    throw new ApiRequestError("합성 샘플 응답의 안전 계약을 확인하지 못했습니다.", { kind: "invalid_response" });
+  }
+  const year = String(payload.year || "");
+  const reportCode = String(payload.report_code || "");
+  const selected = payload.companies.map((company) => ({ ...company }));
+  const selectedCodes = new Set(selected.map((company) => String(company.corp_code || "")));
+  const historyYears = payload.history.flatMap((item) => (item.years || []).map((row) => Number(row.year))).filter(Number.isFinite);
+  const aligned = selected.length > 0
+    && selected.every((company) => /^9\d{7}$/.test(String(company.corp_code || "")))
+    && [payload.results, payload.previous, payload.history, payload.people, payload.people_history]
+      .every((items) => items.length === selected.length && items.every((item) => selectedCodes.has(String(item?.company?.corp_code || ""))));
+  if (!/^20\d{2}$/.test(year) || !["11011", "11012", "11013", "11014"].includes(reportCode) || !aligned || !historyYears.length || !payload.orchestration) {
+    throw new ApiRequestError("합성 샘플 응답의 데이터 계약이 올바르지 않습니다.", { kind: "invalid_response" });
+  }
+  return {
+    classroomMode: true,
+    classroomLoading: false,
+    classroomSample: { ...sample },
+    selected,
+    results: payload.results,
+    previous: payload.previous,
+    history: payload.history,
+    people: payload.people,
+    peopleHistory: payload.people_history,
+    executives: executivesFromPeople(payload.people),
+    orchestration: payload.orchestration,
+    year,
+    reportCode,
+    historyFromYear: String(Math.min(...historyYears)),
+    historyToYear: year,
+    peopleError: "",
+    executivesError: "",
+    historyError: "",
+    peopleHistoryError: "",
+    strategyLoading: false,
+    strategyLoadedFor: dataSelectionKey(selected, year, reportCode),
+    aiMessages: [],
+  };
+}
+async function loadClassroomMode() {
+  cancelClassroomRequest();
+  cancelCompareRequest();
+  cancelStrategyRequest();
+  cancelAiRequest();
+  cancelSearchRequest();
+  cancelPromptRequest();
+  state.compareRequestToken += 1;
+  state.strategyRequestToken += 1;
+  state.promptRequestToken += 1;
+  state.classroomLoading = true;
+  const requestToken = ++state.classroomRequestToken;
+  const abortController = new AbortController();
+  state.classroomAbortController = abortController;
+  renderClassroomMode();
+  setMessage("외부 호출 없는 합성 fixture를 불러오는 중입니다.");
+  try {
+    const payload = await fetchJsonWithDeadline("/api/classroom/bootstrap", { signal: abortController.signal });
+    const snapshot = normalizeClassroomPayload(payload);
+    if (requestToken !== state.classroomRequestToken || state.classroomAbortController !== abortController) return;
+    if (!state.classroomMode) {
+      state.livePeriodBeforeClassroom = {
+        year: $("#yearSelect").value,
+        reportCode: $("#reportSelect").value,
+      };
+    }
+    Object.assign(state, snapshot);
+    $("#yearSelect").value = state.year;
+    $("#reportSelect").value = state.reportCode;
+    $("#analysisPrompt").value = "";
+    $("#aiTransferConsent").checked = false;
+    $("#companySearch").value = "";
+    closeSearchResults();
+    renderClassroomMode();
+    renderSelected();
+    renderDashboard();
+    setMessage("SAMPLE — SYNTHETIC DATA를 불러왔습니다. 외부 OpenDART·AI 호출은 발생하지 않습니다.");
+    $("#sampleBanner").focus();
+  } catch (error) {
+    if (requestToken === state.classroomRequestToken && error?.kind !== "aborted") {
+      setMessage(error.message || "합성 샘플을 불러오지 못했습니다. 다시 시도해 주세요.");
+    }
+  } finally {
+    if (state.classroomAbortController === abortController) state.classroomAbortController = null;
+    if (!state.classroomMode) {
+      state.classroomLoading = false;
+      renderClassroomMode();
+      $("#loadClassroomButton").focus({ preventScroll: true });
+    }
+  }
+}
+function exitClassroomMode() {
+  cancelClassroomRequest();
+  cancelSearchRequest();
+  cancelCompareRequest();
+  cancelStrategyRequest();
+  cancelAiRequest();
+  cancelPromptRequest();
+  state.classroomRequestToken += 1;
+  state.compareRequestToken += 1;
+  state.strategyRequestToken += 1;
+  state.promptRequestToken += 1;
+  const restored = state.livePeriodBeforeClassroom || {};
+  Object.assign(state, {
+    classroomMode: false,
+    classroomLoading: false,
+    classroomSample: null,
+    livePeriodBeforeClassroom: null,
+    selected: [],
+    results: [],
+    previous: [],
+    history: [],
+    people: [],
+    peopleHistory: [],
+    executives: [],
+    orchestration: null,
+    peopleError: "",
+    executivesError: "",
+    historyError: "",
+    peopleHistoryError: "",
+    historyFromYear: "",
+    historyToYear: "",
+    strategyLoading: false,
+    strategyLoadedFor: "",
+    aiMessages: [],
+    year: restored.year || $("#yearSelect").options[0]?.value || "",
+    reportCode: restored.reportCode || "11011",
+  });
+  $("#yearSelect").value = state.year;
+  $("#reportSelect").value = state.reportCode;
+  $("#analysisPrompt").value = "";
+  $("#aiTransferConsent").checked = false;
+  $("#companySearch").value = "";
+  closeSearchResults();
+  renderClassroomMode();
+  renderSelected();
+  renderAiConversation();
+  renderTab();
+  $("#dashboard").classList.add("hidden");
+  $("#welcome").classList.remove("hidden");
+  if (state.healthError) renderHealthFailure();
+  else setMessage("합성 샘플을 초기화했습니다. 실데이터 기업을 검색해 비교를 시작하세요.");
+  $("#loadClassroomButton").focus();
 }
 function resetAiConversationForContextChange() {
   cancelAiRequest();
@@ -173,6 +504,22 @@ function clearAiConversation() {
   resetAiConversationForContextChange();
   $("#analysisPrompt").value = "";
 }
+function disconnectAiConnection() {
+  cancelAiRequest();
+  state.openAiKey = "";
+  state.openAiConnected = false;
+  state.openAiProviderName = "";
+  state.aiMessages = [];
+  const keyInput = $("#openAiApiKey");
+  keyInput.value = "";
+  keyInput.type = "password";
+  $("#toggleApiKey").textContent = "보기";
+  $("#toggleApiKey").setAttribute("aria-pressed", "false");
+  $("#aiTransferConsent").checked = false;
+  renderAiConversation();
+  renderApiConnection();
+  setMessage("AI 키·연결 상태·대화·전송 동의를 모두 제거했습니다.");
+}
 function dataSelectionKey(companies = state.selected, year = state.year, reportCode = state.reportCode) {
   return `${companies.map((item) => item.corp_code).join(",")}:${year}:${reportCode}`;
 }
@@ -180,16 +527,24 @@ function aiContextKey() {
   return `${dataSelectionKey()}:${state.selectedMetrics.join(",")}:${state.activeTab}`;
 }
 function invalidateSelectionRequests() {
+  cancelCompareRequest();
+  cancelStrategyRequest();
+  cancelPromptRequest();
   state.compareRequestToken += 1;
   state.strategyRequestToken += 1;
+  state.promptRequestToken += 1;
   resetAiConversationForContextChange();
   state.strategyLoading = false;
   state.strategyLoadedFor = "";
   if (state.results.length) setMessage("기업 선택이 바뀌었습니다. 인력·보상 비교를 다시 실행해 주세요.");
 }
 function invalidatePeriodRequests(message) {
+  cancelCompareRequest();
+  cancelStrategyRequest();
+  cancelPromptRequest();
   state.compareRequestToken += 1;
   state.strategyRequestToken += 1;
+  state.promptRequestToken += 1;
   resetAiConversationForContextChange();
   state.strategyLoading = false;
   state.strategyLoadedFor = "";
@@ -212,6 +567,7 @@ function conversationQuestion(question) {
   return `${historyHeader}${boundedHistory}${questionHeader}${latestQuestion}`;
 }
 function officialEvidenceUrl(value) {
+  if (state.classroomMode) return "";
   try {
     const url = new URL(String(value || ""));
     const safeOrigin = url.protocol === "https:"
@@ -244,6 +600,7 @@ function officialEvidenceUrl(value) {
   }
 }
 function evidenceSourceUrl(item) {
+  if (state.classroomMode) return "";
   const direct = officialEvidenceUrl(item?.source_urls?.[0]);
   if (direct) return direct;
   const receipt = String(item?.receipt_numbers?.[0] || "");
@@ -283,6 +640,7 @@ function buildValidatedFallback(payload) {
   const violationSummary = violationCodes.length
     ? violationCodes.map((code) => providerViolationLabels[code] || "안전 검증 기준 미충족").join(" · ")
     : "안전 검증 기준 미충족";
+  const responseRequestId = boundedRequestId(payload?.request_id);
   const requestedMetrics = new Set(payload.request?.metric_ids || state.selectedMetrics || []);
   const ledger = (payload.evidence?.ledger || []).filter((item) => (
     item
@@ -302,6 +660,7 @@ function buildValidatedFallback(payload) {
     answer: [
       "AI 초안은 안전 검증에서 차단되어, 서버가 검증한 OpenDART 근거만 표시합니다.",
       `차단 사유: ${violationSummary}`,
+      ...(responseRequestId ? [`요청 ID: ${responseRequestId}`] : []),
       "",
       ...evidenceLines,
       "",
@@ -317,6 +676,7 @@ function renderProviderEvidenceText(value) {
 function renderEvidenceBadge(evidenceId, ledger = []) {
   const item = ledger.find((row) => String(row.evidence_id || "").toLowerCase() === String(evidenceId || "").toLowerCase());
   const url = evidenceSourceUrl(item);
+  if (state.classroomMode && item) return `<span class="evidence-badge missing">합성 근거 ${escapeHtml(evidenceId)}</span>`;
   return item && url
     ? `<a class="evidence-citation evidence-badge" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(`${item.company?.corp_name || "기업"} · ${item.metric_id || "DART 근거"} · ${evidenceId}`)}">근거↗</a>`
     : `<span class="evidence-badge missing">근거 없음</span>`;
@@ -392,15 +752,25 @@ function renderSelected() {
     updateWorkshopProgress();
     return;
   }
-  $("#selectedChips").innerHTML = state.selected.map((company, index) => `<div class="company-row"><span class="company-avatar">${escapeHtml((company.corp_name || "?").slice(0, 1))}</span><span class="company-info"><strong title="${escapeHtml(company.corp_name)}">${escapeHtml(company.corp_name)}</strong><small>${escapeHtml(company.stock_code || company.corp_code)}</small></span><button class="remove-company" data-remove="${index}" type="button" aria-label="${escapeHtml(company.corp_name)} 제거">×</button></div>`).join("");
+  $("#selectedChips").innerHTML = state.selected.map((company, index) => `<div class="company-row"><span class="company-avatar">${escapeHtml((company.corp_name || "?").slice(0, 1))}</span><span class="company-info"><strong title="${escapeHtml(company.corp_name)}">${escapeHtml(company.corp_name)}</strong><small>${escapeHtml(company.stock_code || company.corp_code)}</small></span><button class="remove-company" data-remove="${index}" type="button" aria-label="${escapeHtml(company.corp_name)} 제거"${state.classroomMode ? " disabled title=\"합성 샘플의 비교 기업은 고정됩니다.\"" : ""}>×</button></div>`).join("");
   $("#selectedChips").querySelectorAll("[data-remove]").forEach((button) => button.addEventListener("click", () => { state.selected.splice(Number(button.dataset.remove), 1); invalidateSelectionRequests(); renderSelected(); }));
   updateWorkshopProgress();
 }
 
 let searchCompanies = [];
 let activeSearchIndex = -1;
+let searchTimer;
+let searchRequestToken = 0;
+let searchAbortController = null;
+
+function cancelSearchRequest() {
+  searchAbortController?.abort();
+  searchAbortController = null;
+}
 
 function closeSearchResults() {
+  clearTimeout(searchTimer);
+  cancelSearchRequest();
   searchRequestToken += 1;
   searchCompanies = [];
   activeSearchIndex = -1;
@@ -423,6 +793,7 @@ function setActiveSearchOption(index) {
 }
 
 function addCompany(company) {
+  if (state.classroomMode || state.classroomLoading) { setMessage("합성 샘플 준비 중이거나 활성화된 동안에는 비교 기업을 바꿀 수 없습니다."); return; }
   if (!company || state.selected.some((item) => item.corp_code === company.corp_code)) { $("#companySearch").value = ""; closeSearchResults(); return; }
   if (state.selected.length >= MAX_COMPANIES) { setMessage(`비교 기업은 최대 ${MAX_COMPANIES}개까지 선택할 수 있습니다.`); return; }
   state.selected.push(company); $("#companySearch").value = ""; closeSearchResults(); invalidateSelectionRequests(); renderSelected();
@@ -439,14 +810,24 @@ function renderSearchResults(companies) {
   container.querySelectorAll("[data-result]").forEach((button) => button.addEventListener("click", () => addCompany(companies[Number(button.dataset.result)])));
 }
 
-let searchTimer;
-let searchRequestToken = 0;
 $("#companySearch").addEventListener("input", (event) => {
-  clearTimeout(searchTimer); const query = event.target.value.trim(); const requestToken = ++searchRequestToken;
+  clearTimeout(searchTimer); cancelSearchRequest(); const query = event.target.value.trim(); const requestToken = ++searchRequestToken;
+  if (state.classroomMode || state.classroomLoading) { event.target.value = ""; closeSearchResults(); setMessage("합성 샘플에서는 고정된 가상 기업만 사용합니다."); return; }
   if (!query) { closeSearchResults(); return; }
   searchTimer = setTimeout(async () => {
-    try { const response = await fetch(`/api/companies?q=${encodeURIComponent(query)}`); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "기업 검색에 실패했습니다."); if (requestToken === searchRequestToken && $("#companySearch").value.trim() === query) renderSearchResults(payload.companies || []); }
-    catch (error) { setMessage(error.message); }
+    const abortController = new AbortController();
+    searchAbortController = abortController;
+    try {
+      const payload = await fetchJsonWithDeadline(
+        `/api/companies?q=${encodeURIComponent(query)}`,
+        { signal: abortController.signal },
+      );
+      if (requestToken === searchRequestToken && $("#companySearch").value.trim() === query) renderSearchResults(payload.companies || []);
+    } catch (error) {
+      if (requestToken === searchRequestToken && error?.kind !== "aborted") setMessage(error.message || "기업 검색에 실패했습니다. 다시 시도해 주세요.");
+    } finally {
+      if (searchAbortController === abortController) searchAbortController = null;
+    }
   }, 250);
 });
 $("#companySearch").addEventListener("keydown", (event) => {
@@ -463,45 +844,41 @@ $("#companySearch").addEventListener("keydown", (event) => {
 });
 document.addEventListener("click", (event) => { if (!event.target.closest(".search-wrap") && !event.target.closest("#searchResults")) closeSearchResults(); });
 
-async function requestBatch(companies, year, reportCode) {
+async function requestBatch(companies, year, reportCode, signal) {
   const query = new URLSearchParams({ corp_codes: companies.map((item) => item.corp_code).join(","), year, report_code: reportCode });
   try {
-    const response = await fetch(`/api/financials?${query}`); const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "재무 데이터를 불러오지 못했습니다.");
+    const payload = await fetchJsonWithDeadline(`/api/financials?${query}`, { signal });
     return payload.results || [];
   } catch (error) {
+    if (error?.kind === "aborted") throw error;
     return companies.map((company) => ({ company, error: error.message }));
   }
 }
 
-async function requestAll(companies, year, reportCode) {
-  const responses = await Promise.all(chunks(companies, 5).map((batch) => requestBatch(batch, year, reportCode)));
+async function requestAll(companies, year, reportCode, signal) {
+  const responses = await Promise.all(chunks(companies, 5).map((batch) => requestBatch(batch, year, reportCode, signal)));
   const byCode = new Map(responses.flat().map((item) => [item.company?.corp_code, item]));
   return companies.map((company) => byCode.get(company.corp_code) || ({ company, error: "응답 데이터가 없습니다." }));
 }
 
-async function requestHistory(companies, fromYear, toYear, reportCode) {
+async function requestHistory(companies, fromYear, toYear, reportCode, signal) {
   const query = new URLSearchParams({
     corp_codes: companies.map((item) => item.corp_code).join(","),
     from_year: String(fromYear),
     to_year: String(toYear),
     report_code: reportCode,
   });
-  const response = await fetch(`/api/financials/history?${query}`);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "연도별 재무 데이터를 불러오지 못했습니다.");
+  const payload = await fetchJsonWithDeadline(`/api/financials/history?${query}`, { signal });
   return payload.results || [];
 }
 
-async function requestPeople(companies, year, reportCode) {
+async function requestPeople(companies, year, reportCode, signal) {
   const query = new URLSearchParams({
     corp_codes: companies.map((item) => item.corp_code).join(","),
     year: String(year),
     report_code: reportCode,
   });
-  const response = await fetch(`/api/people?${query}`);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "People 데이터를 불러오지 못했습니다.");
+  const payload = await fetchJsonWithDeadline(`/api/people?${query}`, { signal });
   return payload.results || [];
 }
 
@@ -517,28 +894,24 @@ function executivesFromPeople(results) {
   }));
 }
 
-async function requestPeopleHistory(companies, fromYear, toYear, reportCode) {
+async function requestPeopleHistory(companies, fromYear, toYear, reportCode, signal) {
   const query = new URLSearchParams({
     corp_codes: companies.map((item) => item.corp_code).join(","),
     from_year: String(fromYear),
     to_year: String(toYear),
     report_code: reportCode,
   });
-  const response = await fetch(`/api/people/history?${query}`);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "People 추이 데이터를 불러오지 못했습니다.");
+  const payload = await fetchJsonWithDeadline(`/api/people/history?${query}`, { signal });
   return payload.results || [];
 }
 
-async function requestWorkforceOrchestration(companies, year, reportCode) {
+async function requestWorkforceOrchestration(companies, year, reportCode, signal) {
   const query = new URLSearchParams({
     corp_codes: companies.map((item) => item.corp_code).join(","),
     year: String(year),
     report_code: reportCode,
   });
-  const response = await fetch(`/api/workforce/orchestration?${query}`);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "Workforce 분석 흐름을 실행하지 못했습니다.");
+  const payload = await fetchJsonWithDeadline(`/api/workforce/orchestration?${query}`, { signal });
   return payload;
 }
 
@@ -1115,7 +1488,7 @@ function renderStrategySalaryChart(seriesByCompany) {
     return `<g class="strategy-salary-series"><polyline points="${actualPoints}" fill="none" stroke="var(--ref-${tone})" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>${forecastMarkup}${dots}</g>`;
   }).join("");
   const legend = available.map(({ item, index }) => `<span><i class="strategy-dot ${index % 2 ? "hyn" : "sam"}"></i>${escapeHtml(companyName(item))}</span>`).join("");
-  return `<article class="strategy-chart-card strategy-salary-panel"><div class="strategy-chart-head"><div><strong>1인당 평균 급여 추이와 전망 구간</strong><small>DART 인력 공시 · 다음연도는 모델 추정</small></div><div class="strategy-chart-legend">${legend}<span><i class="strategy-dot forecast"></i>모델 추정</span></div></div><div class="strategy-salary-chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="기업별 평균 급여 추이와 전망 구간">${hasForecast ? `<rect x="${zoneX.toFixed(1)}" y="${top}" width="${(width - right - zoneX).toFixed(1)}" height="${plotHeight}" fill="var(--ref-warn)" opacity=".055" stroke="var(--ref-warn)" stroke-dasharray="4 4"/><text class="strategy-svg-zone" x="${(zoneX + 9).toFixed(1)}" y="${top + 14}">FORECAST RANGE</text>` : ""}${grid}${lines}${labels}</svg></div><div class="strategy-inline-note"><b>전망은 확정 예측이 아닙니다.</b> 마지막 공시값과 최근 변화폭을 기반으로 화면에서만 계산한 모델 추정이며, 성과급 산식이나 개인별 보상을 의미하지 않습니다.</div></article>`;
+  return `<article class="strategy-chart-card strategy-salary-panel"><div class="strategy-chart-head"><div><strong>1인당 평균 급여 추이와 전망 구간</strong><small>${state.classroomMode ? "합성 인력 fixture" : "DART 인력 공시"} · 다음연도는 모델 추정</small></div><div class="strategy-chart-legend">${legend}<span><i class="strategy-dot forecast"></i>모델 추정</span></div></div><div class="strategy-salary-chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="기업별 평균 급여 추이와 전망 구간">${hasForecast ? `<rect x="${zoneX.toFixed(1)}" y="${top}" width="${(width - right - zoneX).toFixed(1)}" height="${plotHeight}" fill="var(--ref-warn)" opacity=".055" stroke="var(--ref-warn)" stroke-dasharray="4 4"/><text class="strategy-svg-zone" x="${(zoneX + 9).toFixed(1)}" y="${top + 14}">FORECAST RANGE</text>` : ""}${grid}${lines}${labels}</svg></div><div class="strategy-inline-note"><b>전망은 확정 예측이 아닙니다.</b> 마지막 ${state.classroomMode ? "합성" : "공시"}값과 최근 변화폭을 기반으로 화면에서만 계산한 모델 추정이며, 성과급 산식이나 개인별 보상을 의미하지 않습니다.</div></article>`;
 }
 
 function renderStrategyProfitChart(seriesByCompany) {
@@ -1142,7 +1515,7 @@ function renderStrategyProfitChart(seriesByCompany) {
   const legend = seriesByCompany.map(({ item }, index) => `<span><i class="strategy-dot ${index % 2 ? "hyn" : "sam"}"></i>${escapeHtml(companyName(item))}</span>`).join("");
   const axisValues = hasNegative ? [max, max * .5, 0, -max * .5, -max] : [max, max * .66, max * .33, 0];
   const axis = axisValues.map((value) => `<span>${escapeHtml(strategyChartAmount(value))}</span>`).join("");
-  return `<article class="strategy-chart-card strategy-profit-panel"><div class="strategy-chart-head"><div><strong>영업이익 추이와 다음연도 전망</strong><small>실선 = DART 실제값 · 해칭 = 모델 추정</small></div><div class="strategy-chart-legend">${legend}<span><i class="strategy-dot forecast"></i>모델 추정</span></div></div><div class="strategy-profit-chart${hasNegative ? " signed-axis" : ""}" role="img" aria-label="기업별 연도별 영업이익과 다음연도 모델 추정"><div class="strategy-profit-axis">${axis}</div><div class="strategy-profit-plot${hasNegative ? " signed-axis" : ""}">${yearGroups}</div></div><div class="strategy-inline-note"><b>이익은 DART 공시 실제값부터 읽습니다.</b> ${hasNegative ? "0선을 중심으로 흑자는 위, 적자는 아래에 표시합니다. " : ""}다음연도 막대는 최근 공개 추세를 단순 연장한 모델 추정입니다.</div></article>`;
+  return `<article class="strategy-chart-card strategy-profit-panel"><div class="strategy-chart-head"><div><strong>영업이익 추이와 다음연도 전망</strong><small>실선 = ${state.classroomMode ? "합성 fixture 값" : "DART 실제값"} · 해칭 = 모델 추정</small></div><div class="strategy-chart-legend">${legend}<span><i class="strategy-dot forecast"></i>모델 추정</span></div></div><div class="strategy-profit-chart${hasNegative ? " signed-axis" : ""}" role="img" aria-label="기업별 연도별 영업이익과 다음연도 모델 추정"><div class="strategy-profit-axis">${axis}</div><div class="strategy-profit-plot${hasNegative ? " signed-axis" : ""}">${yearGroups}</div></div><div class="strategy-inline-note"><b>이익은 ${state.classroomMode ? "합성 fixture 값" : "DART 공시 실제값"}부터 읽습니다.</b> ${hasNegative ? "0선을 중심으로 흑자는 위, 적자는 아래에 표시합니다. " : ""}다음연도 막대는 최근 공개 추세를 단순 연장한 모델 추정입니다.</div></article>`;
 }
 
 function renderStrategyChart(seriesByCompany, formatter, signed = formatter === fmtAmount) {
@@ -1182,15 +1555,17 @@ function renderStrategy() {
     const salaryDetail = p?.error || state.peopleError
       ? "인력 공시 확인 필요"
       : averageSalaryBasisLabel(salaryBasis);
-    return `<article class="strategy-company-card"><div class="strategy-company-head"><div><span class="kicker">${escapeHtml(item.company?.stock_code || item.company?.corp_code || "DART")}</span><h3>${escapeHtml(companyName(item))}</h3></div><span class="strategy-badge actual">${escapeHtml(state.year)} 실제</span></div><div class="strategy-company-metrics">${strategyCompanyMetric("영업이익", fmtAmount(operatingProfit), "DART 재무 공시", "teal")}${strategyCompanyMetric("영업이익률", fmtPercent(valueFor(item, "operating_margin")), "수익성 체력", "coral")}${strategyCompanyMetric("인당 영업이익", fmtAmount(profitPerEmployee), employees === null ? "직원 수 미공시" : `${fmtCount(employees)} 기준`, "gold")}${strategyCompanyMetric("평균 급여", fmtSalary(peopleValue(p, "average_salary")), salaryDetail, "")}</div></article>`;
+    return `<article class="strategy-company-card"><div class="strategy-company-head"><div><span class="kicker">${escapeHtml(item.company?.stock_code || item.company?.corp_code || "DART")}</span><h3>${escapeHtml(companyName(item))}</h3></div><span class="strategy-badge actual">${escapeHtml(state.year)} ${state.classroomMode ? "합성" : "실제"}</span></div><div class="strategy-company-metrics">${strategyCompanyMetric("영업이익", fmtAmount(operatingProfit), state.classroomMode ? "합성 재무 fixture" : "DART 재무 공시", "teal")}${strategyCompanyMetric("영업이익률", fmtPercent(valueFor(item, "operating_margin")), "수익성 체력", "coral")}${strategyCompanyMetric("인당 영업이익", fmtAmount(profitPerEmployee), employees === null ? "직원 수 미공시" : `${fmtCount(employees)} 기준`, "gold")}${strategyCompanyMetric("평균 급여", fmtSalary(peopleValue(p, "average_salary")), salaryDetail, "")}</div></article>`;
   }).join("");
-  const segmentDisclosure = `<article class="strategy-segment-note"><span class="kicker">SEGMENT DISCLOSURE</span><h3>사업부·반도체 세그먼트</h3><p>DART API 기본 재무 응답은 기업 전체 손익을 기준으로 합니다. 사업부별 영업이익은 이 화면에서 추정하지 않고, 사업보고서 원문 연계 확장 영역으로 남깁니다.</p></article>`;
+  const segmentDisclosure = state.classroomMode
+    ? `<article class="strategy-segment-note"><span class="kicker">SYNTHETIC FIXTURE</span><h3>강의용 합성 데이터 범위</h3><p>실제 기업·개인 데이터가 아니며 원문 링크를 제공하지 않습니다. 지표 구조와 판단 절차를 연습하는 용도로만 사용하세요.</p></article>`
+    : `<article class="strategy-segment-note"><span class="kicker">SEGMENT DISCLOSURE</span><h3>사업부·반도체 세그먼트</h3><p>DART API 기본 재무 응답은 기업 전체 손익을 기준으로 합니다. 사업부별 영업이익은 이 화면에서 추정하지 않고, 사업보고서 원문 연계 확장 영역으로 남깁니다.</p></article>`;
   const operatingProfitValues = valid.map((item) => valueFor(item, "operating_profit"));
   const totalOperatingProfit = operatingProfitValues.length
     && operatingProfitValues.every((value) => value !== null)
     ? operatingProfitValues.reduce((sum, value) => sum + value, 0)
     : null;
-  const flow = `<div class="strategy-flow"><div class="strategy-flow-node"><span class="kicker">DART FACT</span><strong>영업이익</strong><small>${fmtAmount(totalOperatingProfit)} · ${totalOperatingProfit === null ? "공시 데이터 없음" : "선택 기업 합산"}</small></div><span class="strategy-flow-arrow">＋</span><div class="strategy-flow-node"><span class="kicker">PEOPLE SIGNAL</span><strong>평균 급여·인당 지표</strong><small>인력 공시와 재무 공시를 나란히 비교</small></div><span class="strategy-flow-arrow">→</span><div class="strategy-flow-node muted"><span class="kicker">VALIDATION LIMIT</span><strong>성과급 연동 산식</strong><small>협약·산식은 DART API만으로 확인 불가</small></div></div>`;
+  const flow = `<div class="strategy-flow"><div class="strategy-flow-node"><span class="kicker">${state.classroomMode ? "SYNTHETIC FACT" : "DART FACT"}</span><strong>영업이익</strong><small>${fmtAmount(totalOperatingProfit)} · ${totalOperatingProfit === null ? "공시 데이터 없음" : "선택 기업 합산"}</small></div><span class="strategy-flow-arrow">＋</span><div class="strategy-flow-node"><span class="kicker">PEOPLE SIGNAL</span><strong>평균 급여·인당 지표</strong><small>인력 공시와 재무 공시를 나란히 비교</small></div><span class="strategy-flow-arrow">→</span><div class="strategy-flow-node muted"><span class="kicker">VALIDATION LIMIT</span><strong>성과급 연동 산식</strong><small>협약·산식은 ${state.classroomMode ? "합성 fixture" : "DART API"}만으로 확인 불가</small></div></div>`;
 
   const operatingSeries = valid.map((item) => ({ item, series: strategySeries(state.history, item.company?.corp_code, "financials", "operating_profit"), error: state.historyError }));
   const salarySeries = valid.map((item) => ({ item, series: strategySeries(state.peopleHistory, item.company?.corp_code, "people", "average_salary"), error: state.peopleHistoryError }));
@@ -1221,7 +1596,9 @@ function renderStrategy() {
   const providerName = state.orchestration?.provider?.name || state.orchestration?.provider?.id || "AI provider";
   const providerResult = state.orchestration?.provider?.result;
   const providerError = state.orchestration?.provider?.error;
-  const aiBrief = providerStatus === "completed" && providerResult
+  const aiBrief = state.classroomMode
+    ? `<section class="strategy-section strategy-ai-brief"><div class="strategy-section-heading"><span class="kicker">SAMPLE / DETERMINISTIC</span><h3>합성 fixture 기반 결정론적 브리핑</h3><p>외부 AI가 생성한 답변이 아닙니다. 동일한 fixture에는 항상 같은 근거·결정 브리프를 표시합니다.</p></div></section>`
+    : providerStatus === "completed" && providerResult
     ? `<section class="strategy-section strategy-ai-brief"><div class="strategy-section-heading"><span class="kicker">AI / BRIEFING</span><h3>AI HR 비교 브리핑</h3><p>${escapeHtml(providerName)}가 검증된 DART 컨텍스트만 사용해 작성했습니다.</p></div><article><pre>${renderProviderEvidenceText(providerResult)}</pre></article></section>`
     : providerStatus === "error"
       ? `<section class="strategy-section strategy-ai-brief"><div class="strategy-section-heading"><span class="kicker">AI / BRIEFING</span><h3>AI 브리핑을 만들지 못했습니다.</h3><p>${escapeHtml(providerError || "AI API 연결 상태를 확인해 주세요.")}</p></div></section>`
@@ -1247,7 +1624,9 @@ function renderStrategy() {
   const excludedObservationCount = (policy.excluded_observations || []).length;
   const eligibleObservationCount = (policy.eligible_observation_ids || []).length;
   const decisionSupportScope = state.orchestration?.provider?.context_summary?.decision_support_status;
-  const policyScopeSummary = policy.status === "blocked"
+  const policyScopeSummary = state.classroomMode
+    ? "합성 fixture 내부에서 품질·개인정보·근거 게이트를 결정론적으로 점검했습니다. 외부 AI에는 전달하지 않았습니다."
+    : policy.status === "blocked"
     ? policyReasons
     : excludedObservationCount
       ? `기업 ${excludedObservationCount}개 제외 · 허용 기업 ${eligibleObservationCount}개만 다시 계산해 AI에 전달`
@@ -1264,12 +1643,16 @@ function renderStrategy() {
   const evidenceLabels = { employees_total: "총 직원", average_salary: "평균 급여", annual_salary_total: "급여 총액", revenue: "매출", operating_profit: "영업이익", operating_margin: "영업이익률", revenue_per_employee: "인당 매출", operating_profit_per_employee: "인당 영업이익", salary_to_revenue: "급여/매출", contract_share: "계약직 비중", average_tenure_years: "평균 근속", term_expiring_within_12_months: "임기 만료" };
   const seenEvidenceUrls = new Set();
   const contextualEvidence = evidenceLedger.map((item) => ({ item, url: evidenceSourceUrl(item) })).filter(({ url }) => url && !seenEvidenceUrls.has(url) && seenEvidenceUrls.add(url)).slice(0, 12);
-  const evidenceLinks = contextualEvidence.length
+  const evidenceLinks = state.classroomMode
+    ? `<span class="strategy-missing compact">합성 fixture 모드에서는 외부 원문 링크를 제공하지 않습니다.</span>`
+    : contextualEvidence.length
     ? contextualEvidence.map(({ item, url }) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(item.company?.corp_name || "기업")}</strong><span>${escapeHtml(evidenceLabels[item.metric_id] || item.metric_id)} · ${escapeHtml(item.year || state.year)} 원문 ↗</span></a>`).join("")
     : sourceUrls.length
       ? sourceUrls.slice(0, 8).map((url, index) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(companyName(valid[index % valid.length]))}</strong><span>재무·인력 공시 원문 ↗</span></a>`).join("")
       : `<span class="strategy-missing compact">원문 접수번호가 포함된 공시가 없습니다.</span>`;
-  return `<div class="tab-panel strategy-brief"><section class="strategy-hero"><div><span class="kicker accent">이익 체력 · 보상 공시 · 급여 지표 · DART 근거</span><h2>이익 체력과 함께 읽는<br /><em>보상 대시보드</em></h2><p>참고 대시보드의 프레임을 선택 기업과 기준연도에 맞춰 재구성했습니다. 실제 공시와 모델 추정을 화면에서 분리합니다.</p></div><div class="strategy-legend"><span><i class="teal"></i>DART 실제</span><span><i class="coral"></i>보상·인력</span><span><i class="gold"></i>모델 추정</span></div></section>${strategyLoadNotice}${decisionBriefs}${aiBrief}<section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">00 / PROFIT CAPACITY</span><h3>이익 체력 — 급여를 논하기 전에</h3><p>영업이익의 크기와 직원 수·평균 급여를 같은 기업 단위에서 읽습니다.</p></div><div class="strategy-company-grid">${companyCards}</div>${segmentDisclosure}${flow}</section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">01 / OPERATING PROFIT</span><h3>영업이익 추이 & 다음연도 전망</h3><p>막대가 실선이면 DART 실제값, 점선이면 최근 추세를 단순 연장한 모델 추정입니다.</p></div>${renderStrategyChart(operatingSeries, fmtAmount)}</section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">02 / AVERAGE PAY</span><h3>평균 급여 추이 & 다음연도 전망 구간</h3><p>평균 급여는 인력 공시의 집계값이며 개인별 보상이나 성과급을 의미하지 않습니다.</p></div>${renderStrategySalaryChart(salarySeries)}</section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">03 / PAY EQUITY</span><h3>성별 급여·근속 격차 (공시분)</h3><p>성별 집계가 함께 공시된 경우에만 비교하며, 격차의 원인이나 공정성을 추론하지 않습니다.</p></div><div class="strategy-equity-grid">${equityCards}</div></section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">03+ / INTERNAL DIAGNOSTICS</span><h3>내부 제도 진단 — 다음 확인 데이터</h3><p>공시 데이터만으로 확정할 수 없는 질문과, 판단을 이어가기 위해 필요한 내부 데이터입니다.</p></div><div class="strategy-placeholder-grid">${placeholders}</div></section><section class="strategy-section strategy-evidence"><div class="strategy-section-heading"><span class="kicker">EVIDENCE / ORCHESTRATION</span><h3>근거와 에이전트 실행 상태</h3><p>${escapeHtml(state.year)}년 · ${escapeHtml(reportLabel(state.reportCode))} · 기업·지표가 표시된 OpenDART 원문을 확인할 수 있습니다.</p></div><div class="strategy-evidence-grid"><article class="strategy-evidence-card"><span class="kicker">SOURCE LINKS</span><div class="strategy-links">${evidenceLinks}</div></article><article class="strategy-evidence-card"><span class="kicker">QUALITY GATE</span><strong>${escapeHtml(qualityStatus)}</strong><small>근거 ${escapeHtml(String(evidenceSummary.evidence_count ?? 0))}개 · 원문 연결 ${escapeHtml(String(evidenceSummary.linked_observation_count ?? 0))}/${escapeHtml(String(evidenceSummary.observation_count ?? 0))}</small>${decisionGapSummary}<p>Run <span class="evidence-run-id">${escapeHtml(runId)}</span> · 원자료 지문과 지표 근거를 함께 검증했습니다. 정정공시 최신 여부는 별도 확인이 필요합니다.</p></article><article class="strategy-evidence-card"><span class="kicker">AI POLICY</span><strong>${escapeHtml(strategyPolicyStatusLabels[policy.status] || policy.status || "미실행")}</strong><small>${escapeHtml(policyModeLabels[policy.mode] || policy.mode || "미산정")} · ${escapeHtml(decisionSupportScopeLabel)} · ${escapeHtml(providerName)}: ${escapeHtml(providerStatus)}</small><p>${escapeHtml(policyScopeSummary)}</p></article><article class="strategy-evidence-card"><span class="kicker">TRACE</span><div class="strategy-trace">${traceRows}</div></article></div></section><p class="strategy-disclaimer">주의: 다음연도 값은 투자·인사 의사결정용 확정 전망이 아니라 최근 공시 추세를 단순 연장한 모델 추정입니다. 성과급 산식, 개인별 성과, 성별 격차의 원인은 DART API만으로 확정할 수 없습니다.</p></div>`;
+  const sourceName = state.classroomMode ? "합성 fixture" : "OpenDART";
+  const strategyHeroKicker = state.classroomMode ? "이익 체력 · 보상 공시 · 급여 지표 · 합성 fixture 근거" : "이익 체력 · 보상 공시 · 급여 지표 · DART 근거";
+  return `<div class="tab-panel strategy-brief"><section class="strategy-hero"><div><span class="kicker accent">${strategyHeroKicker}</span><h2>이익 체력과 함께 읽는<br /><em>보상 대시보드</em></h2><p>참고 대시보드의 프레임을 선택 기업과 기준연도에 맞춰 재구성했습니다. ${state.classroomMode ? "강의용 합성값" : "실제 공시"}과 모델 추정을 화면에서 분리합니다.</p></div><div class="strategy-legend"><span><i class="teal"></i>${state.classroomMode ? "합성 fixture" : "DART 실제"}</span><span><i class="coral"></i>보상·인력</span><span><i class="gold"></i>모델 추정</span></div></section>${strategyLoadNotice}${decisionBriefs}${aiBrief}<section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">00 / PROFIT CAPACITY</span><h3>이익 체력 — 급여를 논하기 전에</h3><p>영업이익의 크기와 직원 수·평균 급여를 같은 기업 단위에서 읽습니다.</p></div><div class="strategy-company-grid">${companyCards}</div>${segmentDisclosure}${flow}</section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">01 / OPERATING PROFIT</span><h3>영업이익 추이 & 다음연도 전망</h3><p>막대가 실선이면 ${sourceName} 값, 점선이면 최근 추세를 단순 연장한 모델 추정입니다.</p></div>${renderStrategyChart(operatingSeries, fmtAmount)}</section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">02 / AVERAGE PAY</span><h3>평균 급여 추이 & 다음연도 전망 구간</h3><p>평균 급여는 인력 집계값이며 개인별 보상이나 성과급을 의미하지 않습니다.</p></div>${renderStrategySalaryChart(salarySeries)}</section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">03 / PAY EQUITY</span><h3>성별 급여·근속 격차 (집계분)</h3><p>성별 집계가 함께 제공된 경우에만 비교하며, 격차의 원인이나 공정성을 추론하지 않습니다.</p></div><div class="strategy-equity-grid">${equityCards}</div></section><section class="strategy-section"><div class="strategy-section-heading"><span class="kicker">03+ / INTERNAL DIAGNOSTICS</span><h3>내부 제도 진단 — 다음 확인 데이터</h3><p>집계 데이터만으로 확정할 수 없는 질문과, 판단을 이어가기 위해 필요한 내부 데이터입니다.</p></div><div class="strategy-placeholder-grid">${placeholders}</div></section><section class="strategy-section strategy-evidence"><div class="strategy-section-heading"><span class="kicker">EVIDENCE / ORCHESTRATION</span><h3>근거와 에이전트 실행 상태</h3><p>${escapeHtml(state.year)}년 · ${escapeHtml(reportLabel(state.reportCode))} · ${state.classroomMode ? "합성 근거 ID만 표시하며 외부 원문 링크는 제공하지 않습니다." : "기업·지표가 표시된 OpenDART 원문을 확인할 수 있습니다."}</p></div><div class="strategy-evidence-grid"><article class="strategy-evidence-card"><span class="kicker">SOURCE LINKS</span><div class="strategy-links">${evidenceLinks}</div></article><article class="strategy-evidence-card"><span class="kicker">QUALITY GATE</span><strong>${escapeHtml(qualityStatus)}</strong><small>근거 ${escapeHtml(String(evidenceSummary.evidence_count ?? 0))}개 · 원문 연결 ${escapeHtml(String(evidenceSummary.linked_observation_count ?? 0))}/${escapeHtml(String(evidenceSummary.observation_count ?? 0))}</small>${decisionGapSummary}<p>Run <span class="evidence-run-id">${escapeHtml(runId)}</span> · 원자료 지문과 지표 근거를 함께 검증했습니다. ${state.classroomMode ? "합성 fixture는 실제 정정공시를 나타내지 않습니다." : "정정공시 최신 여부는 별도 확인이 필요합니다."}</p></article><article class="strategy-evidence-card"><span class="kicker">${state.classroomMode ? "DETERMINISTIC POLICY" : "AI POLICY"}</span><strong>${escapeHtml(strategyPolicyStatusLabels[policy.status] || policy.status || "미실행")}</strong><small>${escapeHtml(policyModeLabels[policy.mode] || policy.mode || "미산정")} · ${escapeHtml(decisionSupportScopeLabel)} · ${state.classroomMode ? "외부 AI 미사용" : `${escapeHtml(providerName)}: ${escapeHtml(providerStatus)}`}</small><p>${escapeHtml(policyScopeSummary)}</p></article><article class="strategy-evidence-card"><span class="kicker">TRACE</span><div class="strategy-trace">${traceRows}</div></article></div></section><p class="strategy-disclaimer">주의: 다음연도 값은 투자·인사 의사결정용 확정 전망이 아니라 최근 ${state.classroomMode ? "합성" : "공시"} 추세를 단순 연장한 모델 추정입니다. 성과급 산식, 개인별 성과, 성별 격차의 원인은 ${sourceName}만으로 확정할 수 없습니다.</p></div>`;
 }
 
 function renderTab() {
@@ -1282,22 +1665,18 @@ function renderTab() {
   const introTitle = document.querySelector(".intro h1");
   const introCopy = document.querySelector(".intro p");
   if (introKicker && introTitle && introCopy) {
-    if (state.activeTab === "strategy") {
+    if (state.classroomMode && state.activeTab === "strategy") {
+      introKicker.textContent = "SAMPLE / WORKFORCE INTELLIGENCE";
+      introTitle.innerHTML = "합성 인력·보상<br /><em>판단 흐름을 연습하세요.</em>";
+      introCopy.innerHTML = '실제 기업·개인 데이터나 외부 AI 없이<br class="wide-only" /> 근거 확인과 HR 판단 한계 구분을 연습합니다.';
+    } else if (state.classroomMode) {
+      introKicker.textContent = "SAMPLE / HR BRIEFING";
+      introTitle.innerHTML = "합성 데이터를<br /><em>결정 브리핑으로.</em>";
+      introCopy.innerHTML = '강의용 fixture를 같은 기준으로 비교하고<br class="wide-only" /> 결정론적 규칙이 확인된 사실과 추가 검증 과제를 구분합니다.';
+    } else if (state.activeTab === "strategy") {
       introKicker.textContent = "DART / WORKFORCE INTELLIGENCE";
       introTitle.innerHTML = "공시 기반 인력·보상<br /><em>벤치마크를 읽으세요.</em>";
       introCopy.innerHTML = '이익 체력, 평균 급여, 임원 구조를 같은 기준으로 비교하고<br class="wide-only" /> HR 전략상 확인해야 할 근거와 한계를 함께 보여줍니다.';
-    } else if (providerStatus === "rejected") {
-      const fallback = buildValidatedFallback(payload);
-      state.openAiProviderName = provider.name || "OpenAI API";
-      state.openAiConnected = true;
-      state.aiMessages.push(
-        { role: "user", content: question },
-        { role: "assistant", content: fallback.answer, evidence: fallback.evidence, guardedFallback: true },
-      );
-      $("#analysisPrompt").value = "";
-      renderAiConversation();
-      renderApiConnection("AI 초안이 안전 검증에서 차단되어 검증된 OpenDART 근거로 대체했습니다.");
-      setMessage("AI 초안 대신 검증된 공시 근거 요약을 표시했습니다.");
     } else {
       introKicker.textContent = "DART / HR BRIEFING";
       introTitle.innerHTML = "공시 데이터를<br /><em>HR 브리핑으로.</em>";
@@ -1371,6 +1750,11 @@ function updateCoverageStrip() {
   const valid = availableResults();
   const evidence = state.orchestration?.evidence?.summary;
   const readiness = state.orchestration?.decision_support?.readiness || [];
+  if (state.classroomMode) {
+    const ready = readiness.filter((item) => ["ready", "directional_only"].includes(item.status)).length;
+    $("#dataCoverage").textContent = `${valid.length} / ${state.results.length}개 합성 기업 · 결정 근거 ${ready}/${readiness.length} · 원문 링크 없음`;
+    return;
+  }
   if (evidence && readiness.length) {
     const ready = readiness.filter((item) => item.status === "ready").length;
     $("#dataCoverage").textContent = `${valid.length} / ${state.results.length}개 수신 · 근거 준비 ${ready}/${readiness.length} · 원문 ${evidence.linked_observation_count ?? 0}/${evidence.observation_count ?? 0}`;
@@ -1384,24 +1768,38 @@ function updateCoverageStrip() {
 }
 
 function renderDashboard() {
-  $("#dashboard").classList.remove("hidden"); $("#welcome").classList.add("hidden"); $("#dataMeta").textContent = `${state.year}년 · ${reportLabel(state.reportCode)}`; $("#headingMeta").textContent = `${state.selected.length}개 기업 · ${state.year}년 기준`; updateCoverageStrip(); renderMetricPills(); renderTab(); updateReadout();
+  $("#dashboard").classList.remove("hidden"); $("#welcome").classList.add("hidden"); $("#dataMeta").textContent = `${state.year}년 · ${reportLabel(state.reportCode)}${state.classroomMode ? " · SAMPLE" : ""}`; $("#headingMeta").textContent = `${state.selected.length}개 ${state.classroomMode ? "합성 " : ""}기업 · ${state.year}년 기준`; updateCoverageStrip(); renderMetricPills(); renderTab(); updateReadout();
   updateWorkshopProgress();
 }
 
 async function loadStrategyData() {
+  if (state.classroomLoading) return;
   if (!state.selected.length || !state.results.length) return;
   const key = dataSelectionKey();
+  if (state.classroomMode) {
+    state.strategyLoading = false;
+    state.strategyLoadedFor = key;
+    renderTab();
+    updateCoverageStrip();
+    updateReadout();
+    updateWorkshopProgress();
+    return;
+  }
   if (state.strategyLoadedFor === key && !state.strategyLoading) { renderTab(); updateCoverageStrip(); updateReadout(); return; }
+  cancelStrategyRequest();
+  const abortController = new AbortController();
+  state.strategyAbortController = abortController;
   const requestToken = ++state.strategyRequestToken;
   state.strategyLoading = true;
   renderTab();
   const fromYear = Math.max(2015, Number(state.year) - 3);
   const [peopleResult, orchestrationResult] = await Promise.allSettled([
-    requestPeopleHistory(state.selected, fromYear, state.year, state.reportCode),
-    requestWorkforceOrchestration(state.selected, state.year, state.reportCode),
+    requestPeopleHistory(state.selected, fromYear, state.year, state.reportCode, abortController.signal),
+    requestWorkforceOrchestration(state.selected, state.year, state.reportCode, abortController.signal),
   ]);
   const currentKey = dataSelectionKey();
   if (requestToken !== state.strategyRequestToken || key !== currentKey) {
+    if (state.strategyAbortController === abortController) state.strategyAbortController = null;
     if (requestToken === state.strategyRequestToken) state.strategyLoading = false;
     return;
   }
@@ -1410,7 +1808,12 @@ async function loadStrategyData() {
   state.peopleHistoryError = peopleResult.status === "rejected" ? peopleResult.reason?.message || "People 추이 요청 실패" : "";
   state.strategyLoadedFor = peopleResult.status === "rejected" && orchestrationResult.status === "rejected" ? "" : key;
   state.strategyLoading = false;
-  if (peopleResult.status === "rejected" && orchestrationResult.status === "rejected") setMessage("Strategy Brief의 People 추이와 에이전트 결과를 불러오지 못했습니다.");
+  if (state.strategyAbortController === abortController) state.strategyAbortController = null;
+  const strategyErrors = [
+    peopleResult.status === "rejected" ? peopleResult.reason?.message || "People 추이 요청 실패" : "",
+    orchestrationResult.status === "rejected" ? orchestrationResult.reason?.message || "결정 브리프 요청 실패" : "",
+  ].filter(Boolean);
+  if (strategyErrors.length) setMessage(`Strategy Brief 일부 또는 전체를 불러오지 못했습니다. ${strategyErrors.join(" · ")}`);
   renderTab();
   updateCoverageStrip();
   updateReadout();
@@ -1418,7 +1821,19 @@ async function loadStrategyData() {
 }
 
 async function compare() {
+  if (state.classroomLoading) { setMessage("합성 fixture를 불러오는 중입니다. 잠시만 기다려 주세요."); return; }
   if (!state.selected.length) { setMessage("먼저 비교할 기업을 1개 이상 선택해 주세요."); return; }
+  if (state.classroomMode) {
+    renderDashboard();
+    loadStrategyData();
+    setMessage("합성 fixture 비교를 다시 표시했습니다. 외부 OpenDART 호출은 발생하지 않았습니다.");
+    $("#dashboard").scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  cancelCompareRequest();
+  cancelStrategyRequest();
+  const abortController = new AbortController();
+  state.compareAbortController = abortController;
   const button = $("#compareButton");
   const selected = state.selected.map((company) => ({ ...company }));
   const year = $("#yearSelect").value;
@@ -1429,13 +1844,13 @@ async function compare() {
   button.dataset.requestToken = String(requestToken); button.disabled = true; button.querySelector("span").textContent = "공시 데이터 불러오는 중"; setMessage(""); state.strategyRequestToken += 1; state.strategyLoading = false;
   try {
     const [currentResult, previousResult, peopleResult] = await Promise.allSettled([
-      requestAll(selected, year, reportCode),
-      requestAll(selected, String(Number(year) - 1), reportCode),
-      requestPeople(selected, year, reportCode),
+      requestAll(selected, year, reportCode, abortController.signal),
+      requestAll(selected, String(Number(year) - 1), reportCode, abortController.signal),
+      requestPeople(selected, year, reportCode, abortController.signal),
     ]);
     const currentInputKey = dataSelectionKey(state.selected, $("#yearSelect").value, $("#reportSelect").value);
     if (requestToken !== state.compareRequestToken || requestKey !== currentInputKey) {
-      setMessage("비교 조건이 바뀌어 이전 응답을 폐기했습니다. 다시 비교를 실행해 주세요.");
+      if (state.compareAbortController === abortController) setMessage("비교 조건이 바뀌어 이전 응답을 폐기했습니다. 다시 비교를 실행해 주세요.");
       return;
     }
     if (currentResult.status !== "fulfilled" || previousResult.status !== "fulfilled") throw new Error("재무 공시 데이터를 불러오지 못했습니다.");
@@ -1447,9 +1862,9 @@ async function compare() {
     const nextHistoryToYear = year;
     let nextHistory = [];
     let nextHistoryError = "";
-    try { nextHistory = await requestHistory(selected, nextHistoryFromYear, nextHistoryToYear, reportCode); } catch (error) { nextHistoryError = error.message || "재무 추이 요청 실패"; }
+    try { nextHistory = await requestHistory(selected, nextHistoryFromYear, nextHistoryToYear, reportCode, abortController.signal); } catch (error) { nextHistoryError = error.message || "재무 추이 요청 실패"; }
     if (requestToken !== state.compareRequestToken || requestKey !== dataSelectionKey(state.selected, $("#yearSelect").value, $("#reportSelect").value)) {
-      setMessage("비교 조건이 바뀌어 이전 추이 응답을 폐기했습니다. 다시 비교를 실행해 주세요.");
+      if (state.compareAbortController === abortController) setMessage("비교 조건이 바뀌어 이전 추이 응답을 폐기했습니다. 다시 비교를 실행해 주세요.");
       return;
     }
     state.year = year;
@@ -1469,12 +1884,26 @@ async function compare() {
     state.strategyLoading = true;
     state.historyFromYear = nextHistoryFromYear;
     state.historyToYear = nextHistoryToYear;
+    const comparisonErrors = [
+      nextResults.find((item) => item?.error)?.error,
+      nextPrevious.find((item) => item?.error)?.error,
+      nextPeopleError,
+      nextHistoryError,
+    ].filter(Boolean);
     renderDashboard();
+    if (comparisonErrors.length) setMessage(`비교 데이터 일부 또는 전체를 불러오지 못했습니다. ${comparisonErrors[0]}`);
     loadStrategyData();
     $("#dashboard").scrollIntoView({ behavior: "smooth", block: "start" });
   }
-  catch (error) { setMessage(error.message || "인력·보상 데이터를 불러오지 못했습니다."); }
-  finally { if (button.dataset.requestToken === String(requestToken)) { button.disabled = false; button.querySelector("span").textContent = "인력·보상 비교"; } }
+  catch (error) {
+    if (requestToken === state.compareRequestToken && requestKey === dataSelectionKey(state.selected, $("#yearSelect").value, $("#reportSelect").value)) {
+      setMessage(error.message || "인력·보상 데이터를 불러오지 못했습니다. 다시 시도해 주세요.");
+    }
+  }
+  finally {
+    if (state.compareAbortController === abortController) state.compareAbortController = null;
+    if (button.dataset.requestToken === String(requestToken)) { button.disabled = false; button.querySelector("span").textContent = "인력·보상 비교"; }
+  }
 }
 
 function buildPeopleContext() {
@@ -1491,33 +1920,96 @@ function buildPeopleHistoryContext() {
 }
 
 function buildPrompt() {
-  const question = redactCredentialText($("#analysisPrompt").value.trim()) || DEFAULT_HR_ANALYSIS_QUESTION; const rows = state.results.filter((item) => !item.error).map((item) => { const f = financials(item); return `${companyName(item)} | 자산 ${fmtAmount(f.assets)} | 부채 ${fmtAmount(f.liabilities)} | 자본 ${fmtAmount(f.equity)} | 현금 ${fmtAmount(f.cash)} | 매출 ${fmtAmount(f.revenue)} | 영업이익 ${fmtAmount(f.operating_profit)} | 영업이익률 ${fmtPercent(f.operating_margin)} | 부채비율 ${fmtPercent(f.debt_ratio)} | 유동비율 ${fmtRatio(f.current_ratio)}`; }).join("\n"); const peopleRows = buildPeopleContext(); return `다음 OpenDART 공시 수치를 근거로 기업 재무구조와 People Analytics 관점을 비교해줘.\n\n[기준]\n연도: ${state.year || "미선택"} / 보고서: ${reportLabel(state.reportCode)} / 금액 단위: 억 원\n\n[기업별 재무 수치]\n${rows || "수치 없음"}\n\n[기업별 People Analytics 수치]\n${peopleRows || "직원·임원 공시 수치 없음"}\n\n[사용자 질문]\n${question}\n\n[답변 규칙]\n1. 먼저 질문에 대한 결론을 간단히 말해줘.\n2. 재무 구조와 인력·보상 구조를 기업별로 분리해 비교해줘.\n3. 직원 수, 정규직 비중, 근속, 급여, 임원 수, 매출/인을 HR 전략의 참고지표로 해석해줘.\n4. 공시 누락, 회계정책 차이, 집계 데이터의 한계를 구분하고 인과관계나 개인별 성과를 단정하지 마.\n5. 실행 가능한 HR 전략은 가설·추가 검증 데이터·예상 지표(KPI)로 나눠 제시해줘.\n6. 투자 매수·매도 추천은 하지 말고 수치와 해석을 분리해줘.`; }
+  const question = redactCredentialText($("#analysisPrompt").value.trim()) || DEFAULT_HR_ANALYSIS_QUESTION; const rows = state.results.filter((item) => !item.error).map((item) => { const f = financials(item); return `${companyName(item)} | 자산 ${fmtAmount(f.assets)} | 부채 ${fmtAmount(f.liabilities)} | 자본 ${fmtAmount(f.equity)} | 현금 ${fmtAmount(f.cash)} | 매출 ${fmtAmount(f.revenue)} | 영업이익 ${fmtAmount(f.operating_profit)} | 영업이익률 ${fmtPercent(f.operating_margin)} | 부채비율 ${fmtPercent(f.debt_ratio)} | 유동비율 ${fmtRatio(f.current_ratio)}`; }).join("\n"); const peopleRows = buildPeopleContext(); return `다음 ${state.classroomMode ? "강의용 합성 fixture" : "OpenDART 공시"} 수치를 근거로 기업 재무구조와 People Analytics 관점을 비교해줘.\n\n[기준]\n연도: ${state.year || "미선택"} / 보고서: ${reportLabel(state.reportCode)} / 금액 단위: 억 원${state.classroomMode ? " / SAMPLE — 실제 기업 데이터 아님" : ""}\n\n[기업별 재무 수치]\n${rows || "수치 없음"}\n\n[기업별 People Analytics 수치]\n${peopleRows || "직원·임원 공시 수치 없음"}\n\n[사용자 질문]\n${question}\n\n[답변 규칙]\n1. 먼저 질문에 대한 결론을 간단히 말해줘.\n2. 재무 구조와 인력·보상 구조를 기업별로 분리해 비교해줘.\n3. 직원 수, 정규직 비중, 근속, 급여, 임원 수, 매출/인을 HR 전략의 참고지표로 해석해줘.\n4. 공시 누락, 회계정책 차이, 집계 데이터의 한계를 구분하고 인과관계나 개인별 성과를 단정하지 마.\n5. 실행 가능한 HR 전략은 가설·추가 검증 데이터·예상 지표(KPI)로 나눠 제시해줘.\n6. 투자 매수·매도 추천은 하지 말고 수치와 해석을 분리해줘.`; }
 
-async function fetchStructuredHandoff() {
+function buildSampleDeterministicBrief(question) {
+  const ledger = state.orchestration?.evidence?.ledger || [];
+  const evidenceId = (corpCode, metricId) => ledger.find((item) => (
+    item?.company?.corp_code === corpCode && item.metric_id === metricId
+  ))?.evidence_id || "";
+  const cite = (corpCode, metricId) => {
+    const id = evidenceId(corpCode, metricId);
+    return id ? ` [${id}]` : "";
+  };
+  const factLines = state.results.filter((item) => !item.error).map((item) => {
+    const corpCode = item.company?.corp_code;
+    const peopleItem = state.people.find((row) => row.company?.corp_code === corpCode);
+    return `- ${companyName(item)}: 매출 ${fmtAmount(valueFor(item, "revenue"))}${cite(corpCode, "revenue")}, 영업이익 ${fmtAmount(valueFor(item, "operating_profit"))}${cite(corpCode, "operating_profit")}, 직원 ${fmtCount(peopleValue(peopleItem, "employees_total"))}${cite(corpCode, "employees_total")}, 평균 급여 ${fmtSalary(peopleValue(peopleItem, "average_salary"))}${cite(corpCode, "average_salary")}`;
+  });
+  const briefs = (state.orchestration?.decision_support?.briefs || []).slice(0, 3);
+  const decisionLines = briefs.length
+    ? briefs.flatMap((brief) => {
+      const ids = (brief.evidence_ids || []).slice(0, 3).map((id) => `[${id}]`).join(" ");
+      return [
+        `- ${strategyDecisionLabels[brief.brief_id] || brief.brief_id}: ${brief.conclusion || "추가 확인 전 판단을 보류합니다."}${ids ? ` ${ids}` : ""}`,
+        `  다음 확인: ${(brief.next_data || []).slice(0, 2).join(" · ") || "내부 원장과 동일 기준 이력"}`,
+      ];
+    })
+    : ["- 결정 지원 근거가 없어 추가 확인 전 판단을 보류합니다."];
+  return [
+    "합성 fixture 기반 결정론적 브리핑입니다. 외부 AI가 생성한 답변이 아닙니다.",
+    `질문: ${question}`,
+    "",
+    "[합성 비교 사실]",
+    ...factLines,
+    "",
+    "[결정 지원]",
+    ...decisionLines,
+    "",
+    "판단 한계: 강의용 가상 기업의 집계값이며 실제 기업·개인·채용·평가·보상 결정을 뜻하지 않습니다.",
+    "동일한 fixture와 질문에는 같은 규칙 기반 결과를 반환하며, 외부 OpenDART·AI 요청은 발생하지 않습니다.",
+  ].join("\n");
+}
+
+function runSampleDeterministicBrief() {
+  const questionInput = $("#analysisPrompt");
+  const question = redactCredentialText(questionInput.value.trim()) || DEFAULT_HR_ANALYSIS_QUESTION;
+  questionInput.value = "";
+  state.aiRequestToken += 1;
+  state.aiMessages.push(
+    { role: "user", content: question },
+    {
+      role: "assistant",
+      label: "결정론적 브리핑",
+      content: buildSampleDeterministicBrief(question),
+      evidence: state.orchestration?.evidence?.ledger || [],
+      deterministicFixture: true,
+    },
+  );
+  renderAiConversation();
+  renderApiConnection("합성 fixture 기반 결정론적 브리핑 · 외부 AI 전송 없음");
+  setMessage("합성 fixture만 사용해 결정론적 브리핑을 만들었습니다. 외부 AI 호출은 발생하지 않았습니다.");
+}
+
+async function fetchStructuredHandoff({ signal, selected, year, reportCode }) {
   const question = redactCredentialText($("#analysisPrompt").value.trim())
     || DEFAULT_HR_ANALYSIS_QUESTION;
-  const response = await fetch("/api/analysis/context", {
+  const payload = await fetchJsonWithDeadline("/api/analysis/context", {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       question,
       view: state.activeTab,
-      corp_codes: state.selected.map((company) => company.corp_code),
-      year: state.year,
-      report_code: state.reportCode,
+      corp_codes: selected.map((company) => company.corp_code),
+      year,
+      report_code: reportCode,
       metric_ids: state.selectedMetrics,
       page: 1,
       page_size: 40,
     }),
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "서버 분석 컨텍스트를 만들지 못했습니다.");
   return payload.prompt || payload.prompt_handoff?.prompt || buildPrompt();
 }
 
 async function runAiAnalysis() {
   const button = $("#runAiButton");
   const resultBox = $("#aiResult");
+  if (state.classroomLoading) {
+    resultBox.dataset.state = "warning";
+    resultBox.textContent = "합성 fixture를 불러오는 중입니다. 잠시만 기다려 주세요.";
+    return;
+  }
   if (!state.selected.length) {
     resultBox.dataset.state = "warning";
     resultBox.textContent = "먼저 비교할 기업을 선택해 주세요.";
@@ -1531,6 +2023,10 @@ async function runAiAnalysis() {
   ) {
     resultBox.dataset.state = "warning";
     resultBox.textContent = "기준연도 또는 보고서가 바뀌었습니다. 먼저 인력·보상 비교를 다시 실행해 주세요.";
+    return;
+  }
+  if (state.classroomMode) {
+    runSampleDeterministicBrief();
     return;
   }
   if (!state.results.length) {
@@ -1561,6 +2057,13 @@ async function runAiAnalysis() {
     $("#analysisPrompt").focus();
     return;
   }
+  const consent = $("#aiTransferConsent");
+  if (!consent.checked) {
+    resultBox.dataset.state = "warning";
+    resultBox.textContent = "질문과 공개 기업 집계를 AI 제공자에 전송하는 데 동의해 주세요.";
+    consent.focus();
+    return;
+  }
   const previouslyConnected = state.openAiConnected && state.openAiKey === apiKey;
   state.openAiKey = apiKey;
   state.openAiConnected = previouslyConnected;
@@ -1574,7 +2077,7 @@ async function runAiAnalysis() {
   button.textContent = "답변 생성 중…";
   renderAiConversation(question);
   try {
-    const response = await fetch("/api/analysis", {
+    const payload = await fetchJsonWithDeadline("/api/analysis", {
       method: "POST",
       signal: abortController.signal,
       headers: aiRequestHeaders({ "Content-Type": "application/json" }),
@@ -1585,17 +2088,16 @@ async function runAiAnalysis() {
         year: state.year,
         report_code: state.reportCode,
         metric_ids: state.selectedMetrics,
+        provider_data_consent: true,
         page: 1,
         page_size: 40,
       }),
     });
-    const payload = await response.json();
     if (requestToken !== state.aiRequestToken || requestKey !== aiContextKey()) {
       setMessage("분석 기준이 바뀌어 이전 AI 응답을 폐기했습니다.");
       renderApiConnection();
       return;
     }
-    if (!response.ok) throw new Error(payload.error || "AI 분석 요청에 실패했습니다.");
     const provider = payload.provider || {};
     const providerStatus = provider.status || payload.provider_status || "not_configured";
     const providerResult = provider.result ?? payload.provider_result;
@@ -1611,6 +2113,18 @@ async function runAiAnalysis() {
       $("#analysisPrompt").value = "";
       renderAiConversation();
       renderApiConnection();
+    } else if (providerStatus === "rejected") {
+      const fallback = buildValidatedFallback(payload);
+      state.openAiProviderName = provider.name || "OpenAI API";
+      state.openAiConnected = true;
+      state.aiMessages.push(
+        { role: "user", content: question },
+        { role: "assistant", content: fallback.answer, evidence: fallback.evidence, guardedFallback: true },
+      );
+      $("#analysisPrompt").value = "";
+      renderAiConversation();
+      renderApiConnection("AI 초안이 안전 검증에서 차단되어 검증된 OpenDART 근거로 대체했습니다.");
+      setMessage("AI 초안 대신 검증된 공시 근거 요약을 표시했습니다.");
     } else {
       const providerName = provider.name || provider.id || "AI provider";
       const providerError = provider.error || payload.prompt_handoff?.error || `${providerName} 상태: ${providerStatus}`;
@@ -1634,23 +2148,52 @@ async function runAiAnalysis() {
     if (requestToken === state.aiRequestToken) {
       state.aiAbortController = null;
       button.disabled = false;
-      button.textContent = "AI에게 질문하기 ↗";
+      button.textContent = state.classroomMode ? "합성 결정 브리핑 만들기" : "AI에게 질문하기 ↗";
     }
   }
 }
 
 async function copyPrompt() {
+  if (state.classroomLoading) { setMessage("합성 fixture를 불러온 뒤 다시 시도해 주세요."); return; }
+  cancelPromptRequest();
+  const requestToken = ++state.promptRequestToken;
+  const selected = state.selected.map((company) => ({ ...company }));
+  const year = $("#yearSelect").value;
+  const reportCode = $("#reportSelect").value;
+  const requestKey = dataSelectionKey(selected, year, reportCode);
+  const abortController = new AbortController();
+  state.promptAbortController = abortController;
+  const requestIsCurrent = () => (
+    requestToken === state.promptRequestToken
+    && requestKey === dataSelectionKey(state.selected, $("#yearSelect").value, $("#reportSelect").value)
+    && !abortController.signal.aborted
+  );
   try {
-    const prompt = state.selected.length ? await fetchStructuredHandoff() : buildPrompt();
+    const prompt = state.classroomMode || !selected.length
+      ? buildPrompt()
+      : await fetchStructuredHandoff({
+        signal: abortController.signal,
+        selected,
+        year,
+        reportCode,
+      });
+    if (!requestIsCurrent()) return;
     await navigator.clipboard.writeText(prompt);
-    setMessage("서버 오케스트레이터가 만든 분석 프롬프트를 클립보드에 복사했습니다.");
+    if (!requestIsCurrent()) return;
+    setMessage(state.classroomMode
+      ? "합성 fixture 화면의 구조화 프롬프트를 복사했습니다. 외부 요청은 발생하지 않았습니다."
+      : "서버 오케스트레이터가 만든 분석 프롬프트를 클립보드에 복사했습니다.");
   } catch (error) {
+    if (!requestIsCurrent() || error?.kind === "aborted") return;
     try {
       await navigator.clipboard.writeText(buildPrompt());
-      setMessage("OpenDART 재조회가 실패해 현재 화면의 구조화 프롬프트를 복사했습니다.");
+      if (!requestIsCurrent()) return;
+      setMessage(`OpenDART 재조회가 실패해 현재 화면의 구조화 프롬프트를 복사했습니다. ${error.message || "잠시 후 다시 시도해 주세요."}`);
     } catch {
-      setMessage(error.message || "클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.");
+      if (requestIsCurrent()) setMessage(error.message || "클립보드 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.");
     }
+  } finally {
+    if (state.promptAbortController === abortController) state.promptAbortController = null;
   }
 }
 function csvCell(value) {
@@ -1660,7 +2203,27 @@ function csvCell(value) {
     : raw;
   return `"${safe.replaceAll('"', '""')}"`;
 }
-function exportCsv() { if (!state.results.length) { setMessage("먼저 재무구조 비교를 실행해 주세요."); return; } const header = ["기준연도", "보고서", "기업명", "종목코드", ...allMetricKeys.map((key) => metricDefs[key].label)]; const rows = state.results.map((item) => [state.year, reportLabel(state.reportCode), companyName(item), item.company?.stock_code || "", ...allMetricKeys.map((key) => valueFor(item, key) ?? "")]); const csv = "\uFEFF" + [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n"); const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); link.download = `dart-financial-structure-${state.year || "export"}.csv`; link.click(); URL.revokeObjectURL(link.href); }
+function exportCsv() {
+  if (!state.results.length) { setMessage("먼저 재무구조 비교를 실행해 주세요."); return; }
+  const sampleColumns = state.classroomMode ? ["데이터 구분"] : [];
+  const header = [...sampleColumns, "기준연도", "보고서", "기업명", "종목코드", ...allMetricKeys.map((key) => metricDefs[key].label)];
+  const rows = state.results.map((item) => [
+    ...(state.classroomMode ? ["SAMPLE — SYNTHETIC DATA"] : []),
+    state.year,
+    reportLabel(state.reportCode),
+    companyName(item),
+    item.company?.stock_code || "",
+    ...allMetricKeys.map((key) => valueFor(item, key) ?? ""),
+  ]);
+  const csv = "\uFEFF" + [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  link.download = state.classroomMode
+    ? `classroom-synthetic-${state.year || "export"}.csv`
+    : `dart-financial-structure-${state.year || "export"}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
 
 function activateTab(button, focus = false) {
   if (!button?.dataset.tab) return;
@@ -1688,17 +2251,19 @@ function initializeTabs() {
   if (active) $("#tabContent").setAttribute("aria-labelledby", active.id);
 }
 
-$("#compareButton").addEventListener("click", compare); $("#runAiButton").addEventListener("click", runAiAnalysis); $("#clearAiButton").addEventListener("click", clearAiConversation); $("#copyPromptButton").addEventListener("click", copyPrompt); $("#readoutCopyButton").addEventListener("click", copyPrompt); $("#exportButton").addEventListener("click", exportCsv); $("#toggleApiKey").addEventListener("click", () => { const input = $("#openAiApiKey"); const reveal = input.type === "password"; input.type = reveal ? "text" : "password"; $("#toggleApiKey").textContent = reveal ? "숨김" : "보기"; $("#toggleApiKey").setAttribute("aria-pressed", String(reveal)); }); $("#analysisPrompt").addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) runAiAnalysis(); }); document.querySelectorAll("[data-question]").forEach((button) => button.addEventListener("click", () => { $("#analysisPrompt").value = button.dataset.question || ""; $("#analysisPrompt").focus(); setMessage("예시 질문을 불러왔습니다. 기업 비교 후 AI에게 질문해 보세요."); })); $("#yearSelect").addEventListener("change", () => invalidatePeriodRequests("기준연도가 바뀌었습니다. 다시 비교를 실행해 주세요.")); $("#reportSelect").addEventListener("change", () => invalidatePeriodRequests("보고서가 바뀌었습니다. 다시 비교를 실행해 주세요.")); $("#clearMetricsButton").addEventListener("click", () => { state.selectedMetrics = ["assets", "liabilities", "equity", "cash", "revenue", "operating_profit", "operating_margin", "debt_ratio", "current_ratio"]; state.strategyLoadedFor = ""; resetAiConversationForContextChange(); renderMetricPills(); renderTab(); }); $("#tabs").addEventListener("click", (event) => activateTab(event.target.closest("[data-tab]"))); $("#tabs").addEventListener("keydown", (event) => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; const tabs = [...$("#tabs").querySelectorAll("[role=tab]")]; const current = tabs.indexOf(event.target.closest("[role=tab]")); if (current < 0) return; event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; activateTab(tabs[next], true); }); $("#themeToggle").addEventListener("click", () => { const dark = document.documentElement.dataset.theme === "dark"; document.documentElement.dataset.theme = dark ? "" : "dark"; safeStorageSet("dart-theme", dark ? "light" : "dark"); });
+$("#compareButton").addEventListener("click", compare); $("#runAiButton").addEventListener("click", runAiAnalysis); $("#clearAiButton").addEventListener("click", clearAiConversation); $("#copyPromptButton").addEventListener("click", copyPrompt); $("#readoutCopyButton").addEventListener("click", copyPrompt); $("#exportButton").addEventListener("click", exportCsv); $("#toggleApiKey").addEventListener("click", () => { const input = $("#openAiApiKey"); const reveal = input.type === "password"; input.type = reveal ? "text" : "password"; $("#toggleApiKey").textContent = reveal ? "숨김" : "보기"; $("#toggleApiKey").setAttribute("aria-pressed", String(reveal)); }); $("#analysisPrompt").addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) runAiAnalysis(); }); document.querySelectorAll("[data-question]").forEach((button) => button.addEventListener("click", () => { $("#analysisPrompt").value = button.dataset.question || ""; $("#analysisPrompt").focus(); setMessage("예시 질문을 불러왔습니다. 기업 비교 후 AI에게 질문해 보세요."); })); $("#yearSelect").addEventListener("change", () => { if (state.classroomMode) { $("#yearSelect").value = state.year; setMessage("합성 fixture의 기준연도는 고정됩니다."); return; } invalidatePeriodRequests("기준연도가 바뀌었습니다. 다시 비교를 실행해 주세요."); }); $("#reportSelect").addEventListener("change", () => { if (state.classroomMode) { $("#reportSelect").value = state.reportCode; setMessage("합성 fixture의 보고서 기준은 고정됩니다."); return; } invalidatePeriodRequests("보고서가 바뀌었습니다. 다시 비교를 실행해 주세요."); }); $("#clearMetricsButton").addEventListener("click", () => { state.selectedMetrics = ["assets", "liabilities", "equity", "cash", "revenue", "operating_profit", "operating_margin", "debt_ratio", "current_ratio"]; state.strategyLoadedFor = ""; resetAiConversationForContextChange(); renderMetricPills(); renderTab(); }); $("#tabs").addEventListener("click", (event) => activateTab(event.target.closest("[data-tab]"))); $("#tabs").addEventListener("keydown", (event) => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; const tabs = [...$("#tabs").querySelectorAll("[role=tab]")]; const current = tabs.indexOf(event.target.closest("[role=tab]")); if (current < 0) return; event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; activateTab(tabs[next], true); }); $("#themeToggle").addEventListener("click", () => { const dark = document.documentElement.dataset.theme === "dark"; document.documentElement.dataset.theme = dark ? "" : "dark"; safeStorageSet("dart-theme", dark ? "light" : "dark"); });
+$("#loadClassroomButton").addEventListener("click", loadClassroomMode);
+$("#exitClassroomButton").addEventListener("click", exitClassroomMode);
+$("#disconnectAiButton").addEventListener("click", disconnectAiConnection);
 
-initializeTabs(); setupYears(); renderSelected(); renderApiConnection(); if (safeStorageGet("dart-theme") === "dark") document.documentElement.dataset.theme = "dark";
-fetch("/api/health").then(async (response) => {
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "서버 상태를 확인하지 못했습니다.");
+initializeTabs(); setupYears(); renderSelected(); renderClassroomMode(); if (safeStorageGet("dart-theme") === "dark") document.documentElement.dataset.theme = "dark";
+fetchJsonWithDeadline("/api/health").then((payload) => {
   if (payload?.app?.id !== EXPECTED_APP_ID) throw new Error("현재 주소가 DART HR Briefing 서버가 아닙니다.");
   return payload;
 }).then((payload) => {
   state.appIdentity = payload.app;
   state.dartApiReady = Boolean(payload.api_key_configured);
+  state.healthError = "";
   const buildInfo = $("#appBuildInfo");
   buildInfo.textContent = `v${payload.app.version || "?"} · ${payload.app.build_id || "빌드 미상"} · port ${payload.app.port || location.port}`;
   buildInfo.title = `인스턴스 ${payload.app.instance_id || "미상"}`;
@@ -1706,9 +2271,6 @@ fetch("/api/health").then(async (response) => {
 }).catch((error) => {
   state.dartApiReady = false;
   state.appIdentity = null;
-  const buildInfo = $("#appBuildInfo");
-  buildInfo.textContent = error.message || "서버 식별 실패";
-  const status = $("#apiStatus");
-  status.classList.add("error");
-  status.innerHTML = "<i></i> 서버 연결 필요";
+  state.healthError = error.message || "서버 식별 실패";
+  renderHealthFailure();
 });

@@ -1073,6 +1073,27 @@ class AgentOrchestrationTests(unittest.TestCase):
             result["provider_validation"]["violation_codes"],
         )
 
+    def test_provider_rejects_uncited_factual_claims_not_covered_by_unit_parser(self):
+        claims = (
+            "직원 수는 백 명이고 평균급여 지수는 999입니다.",
+            "이사회의 사내이사 비중이 감소했습니다.",
+            "Revenue increased while workforce productivity was higher.",
+        )
+        for claim in claims:
+            with self.subTest(claim=claim):
+                result = WorkforceAgentOrchestrator(
+                    provider=CountingProvider(claim)
+                ).run([observation("001", "A사", 100, 1, 10000)])
+
+                self.assertEqual(result["provider"]["status"], "rejected")
+                self.assertIn(
+                    "uncited_factual_claim",
+                    result["provider_validation"]["violation_codes"],
+                )
+                self.assertTrue(
+                    result["provider_validation"]["unsupported_factual_claims"]
+                )
+
     def test_provider_rejects_uncited_numeric_line_even_when_another_line_is_cited(self):
         def partly_grounded(context):
             employees = next(
@@ -1382,6 +1403,82 @@ class AgentOrchestrationTests(unittest.TestCase):
             result["provider_validation"]["warnings"],
         )
 
+    def test_provider_rejects_automated_hr_action_recommendations(self):
+        recommendations = (
+            "정규직을 줄이고 계약직 채용을 확대해야 합니다.",
+            "테스트전자 직원들은 무능하며 감축 대상입니다.",
+            "We should fire low-performing employees and reduce headcount.",
+        )
+        for recommendation in recommendations:
+            with self.subTest(recommendation=recommendation):
+                result = WorkforceAgentOrchestrator(
+                    provider=CountingProvider(recommendation)
+                ).run([observation("001", "테스트전자", 100, 1, 10000)])
+
+                self.assertEqual(result["provider"]["status"], "rejected")
+                self.assertIn(
+                    "automated_hr_action_recommendation",
+                    result["provider_validation"]["violation_codes"],
+                )
+                self.assertNotIn(
+                    recommendation,
+                    json.dumps(result, ensure_ascii=False),
+                )
+
+    def test_provider_rejects_protected_characteristic_judgments(self):
+        judgments = (
+            "여성 직원은 남성 직원보다 성과가 낮으므로 채용 우선순위를 낮춰야 합니다.",
+            "Older employees are less competent and should not be promoted.",
+        )
+        for judgment in judgments:
+            with self.subTest(judgment=judgment):
+                result = WorkforceAgentOrchestrator(
+                    provider=CountingProvider(judgment)
+                ).run([observation("001", "A사", 100, 1, 10000)])
+
+                self.assertEqual(result["provider"]["status"], "rejected")
+                self.assertIn(
+                    "protected_characteristic_judgment",
+                    result["provider_validation"]["violation_codes"],
+                )
+                self.assertNotIn(
+                    judgment,
+                    json.dumps(result, ensure_ascii=False),
+                )
+
+    def test_provider_allows_explicit_hr_policy_limit_without_factual_claim(self):
+        limits = (
+            "해고를 권고하지 않습니다.",
+            "성별만으로 개인 성과를 평가할 수 없습니다.",
+            "Gender must not be used as a basis for hiring decisions.",
+        )
+        for limit in limits:
+            with self.subTest(limit=limit):
+                result = WorkforceAgentOrchestrator(
+                    provider=CountingProvider(limit)
+                ).run([observation("001", "A사", 100, 1, 10000)])
+
+                self.assertEqual(result["provider"]["status"], "completed")
+                self.assertNotIn(
+                    "automated_hr_action_recommendation",
+                    result["provider_validation"]["violation_codes"],
+                )
+                self.assertNotIn(
+                    "protected_characteristic_judgment",
+                    result["provider_validation"]["violation_codes"],
+                )
+
+    def test_provider_rejects_named_person_judgment_without_executive_title(self):
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider("홍길동은 무능하고 퇴출 대상입니다.")
+        ).run([observation("001", "A사", 100, 1, 10000)])
+
+        self.assertEqual(result["provider"]["status"], "rejected")
+        self.assertIn(
+            "fabricated_person_judgment",
+            result["provider_validation"]["violation_codes"],
+        )
+
     def test_generic_or_company_executive_reference_is_not_name_warning(self):
         result = WorkforceAgentOrchestrator(
             provider=CountingProvider("한화 임원 구조와 여성 임원 구성을 검토합니다.")
@@ -1405,10 +1502,14 @@ class AgentOrchestrationTests(unittest.TestCase):
                 result = WorkforceAgentOrchestrator(
                     provider=CountingProvider(sentence)
                 ).run([observation("001", "한화", 100, 1, 10000)])
-                self.assertEqual(result["provider"]["status"], "completed")
+                self.assertEqual(result["provider"]["status"], "rejected")
+                self.assertIn(
+                    "uncited_factual_claim",
+                    result["provider_validation"]["violation_codes"],
+                )
                 self.assertNotIn(
-                    "possible_fabricated_person_reference",
-                    result["provider_validation"]["warnings"],
+                    "fabricated_person_judgment",
+                    result["provider_validation"]["violation_codes"],
                 )
 
     def test_provider_output_with_unknown_evidence_id_is_removed(self):
@@ -1688,6 +1789,41 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.assertNotIn("dart-secret123", rendered)
         self.assertNotIn("gateway-secret123", rendered)
         self.assertIn("[REDACTED]", rendered)
+
+    def test_request_question_redacts_direct_identifiers_before_provider(self):
+        provider = CountingProvider()
+        result = WorkforceAgentOrchestrator(provider=provider).run(
+            [observation("001", "A사", 100, 1, 10000)],
+            request_context={
+                "question": (
+                    "김철수 사번 HR-12345, user@example.com, 010-1234-5678, "
+                    "900101-1234567의 퇴출 가능성을 평가해줘. "
+                    "John Doe should be fired."
+                )
+            },
+        )
+
+        rendered = json.dumps(
+            {"request": result["request"], "context": provider.context},
+            ensure_ascii=False,
+        )
+        for private_literal in (
+            "김철수",
+            "HR-12345",
+            "user@example.com",
+            "010-1234-5678",
+            "900101-1234567",
+            "John Doe",
+        ):
+            self.assertNotIn(private_literal, rendered)
+        for marker in (
+            "[REDACTED_PERSON]",
+            "[REDACTED_EMPLOYEE_ID]",
+            "[REDACTED_EMAIL]",
+            "[REDACTED_PHONE]",
+            "[REDACTED_RRN]",
+        ):
+            self.assertIn(marker, rendered)
 
     def test_provider_output_with_credential_literal_is_rejected(self):
         provider = CountingProvider(result="노출된 자격증명 sk-provider-secret123")

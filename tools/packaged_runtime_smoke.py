@@ -9,6 +9,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -17,6 +18,15 @@ from urllib.request import urlopen
 
 
 MAX_SMOKE_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
+def _console_safe_json(result: Mapping[str, Any], encoding: str | None) -> str:
+    rendered = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    try:
+        rendered.encode(encoding or "utf-8")
+    except (LookupError, UnicodeEncodeError):
+        return json.dumps(result, ensure_ascii=True, indent=2) + "\n"
+    return rendered
 
 
 def _reject_nonfinite_json(token: str) -> None:
@@ -71,6 +81,14 @@ def validate_health_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     runtime = payload.get("runtime")
     if not isinstance(runtime, Mapping):
         raise ValueError("health payload must include runtime metrics")
+    classroom = payload.get("classroom_sample")
+    if (
+        not isinstance(classroom, Mapping)
+        or classroom.get("available") is not True
+        or classroom.get("endpoint") != "/api/classroom/bootstrap"
+        or classroom.get("network_requests") != 0
+    ):
+        raise ValueError("health payload must expose the zero-network classroom sample")
     return {
         "health_ok": True,
         "app_id": str(app["id"]),
@@ -84,6 +102,7 @@ def validate_health_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             payload.get("strict_schema_validator_ready")
         ),
         "runtime_keys": sorted(str(key) for key in runtime.keys()),
+        "classroom_sample_available": True,
     }
 
 
@@ -106,6 +125,9 @@ def validate_static_assets(app_js: str, styles_css: str) -> dict[str, Any]:
         "relativeComparisonBoundary",
         "strategy-load-notice",
         "safeStorageGet",
+        "loadClassroomMode",
+        "/api/classroom/bootstrap",
+        "provider_data_consent",
     )
     style_markers = (
         ".strategy-metric-quality",
@@ -113,6 +135,8 @@ def validate_static_assets(app_js: str, styles_css: str) -> dict[str, Any]:
         ".comparison-boundary",
         ".strategy-load-notice",
         ".result-item.active",
+        ".sample-banner",
+        ".ai-transfer-notice",
     )
     if any(marker not in app_js for marker in app_markers):
         raise ValueError("packaged app.js is missing HR decision-support markers")
@@ -123,6 +147,80 @@ def validate_static_assets(app_js: str, styles_css: str) -> dict[str, Any]:
         "styles_css_ok": True,
         "app_js_bytes": len(app_js.encode("utf-8")),
         "styles_css_bytes": len(styles_css.encode("utf-8")),
+    }
+
+
+def validate_classroom_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    sample = payload.get("sample")
+    provenance = sample.get("provenance") if isinstance(sample, Mapping) else None
+    if (
+        not isinstance(sample, Mapping)
+        or sample.get("enabled") is not True
+        or sample.get("watermark") != "SAMPLE — SYNTHETIC DATA"
+        or sample.get("fixture_id") != "dart-hr-briefing-classroom-v1"
+        or sample.get("network_requests") != 0
+        or sample.get("contains_real_company_data") is not False
+        or sample.get("contains_personal_data") is not False
+        or sample.get("evidence_references") != "synthetic_contract_only"
+        or sample.get("outbound_evidence_links") is not False
+        or sample.get("receipt_numbers_exposed") is not False
+        or not isinstance(provenance, Mapping)
+        or provenance.get("source_data_used") is not False
+        or provenance.get("third_party_content_used") is not False
+        or provenance.get("contains_real_company_data") is not False
+        or provenance.get("contains_personal_data") is not False
+    ):
+        raise ValueError("classroom payload must be explicitly synthetic and zero-network")
+    companies = payload.get("companies")
+    if (
+        not isinstance(companies, list)
+        or len(companies) < 2
+        or any(
+            not isinstance(company, Mapping)
+            or not str(company.get("corp_code") or "").startswith("9")
+            for company in companies
+        )
+    ):
+        raise ValueError("classroom payload must include synthetic comparison companies")
+    count = len(companies)
+    for key in ("results", "previous", "history", "people", "people_history"):
+        rows = payload.get(key)
+        if not isinstance(rows, list) or len(rows) != count:
+            raise ValueError(f"classroom payload has an invalid {key} collection")
+    orchestration = payload.get("orchestration")
+    if (
+        not isinstance(orchestration, Mapping)
+        or orchestration.get("source") != "synthetic_fixture"
+    ):
+        raise ValueError("classroom payload must include deterministic orchestration")
+    evidence = orchestration.get("evidence")
+    if (
+        not isinstance(evidence, Mapping)
+        or evidence.get("reference_mode") != "synthetic_fixture_urn"
+        or evidence.get("external_source_links") is not False
+        or "합성" not in str(evidence.get("source_notice") or "")
+    ):
+        raise ValueError("classroom evidence must identify synthetic non-network references")
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if (
+        re.search(r"https?://|dart\.fss\.or\.kr", serialized, flags=re.IGNORECASE)
+        or "20991231" in serialized
+        or '"rcept_no"' in serialized
+    ):
+        raise ValueError("classroom payload must not expose filing URLs or receipt numbers")
+    orchestration_summary = validate_orchestration_payload(orchestration)
+    return {
+        "sample_enabled": True,
+        "fixture_id": str(sample["fixture_id"]),
+        "watermark": str(sample["watermark"]),
+        "network_requests": 0,
+        "company_count": count,
+        "year": str(payload.get("year") or ""),
+        "report_code": str(payload.get("report_code") or ""),
+        "source": "synthetic_fixture",
+        "reference_mode": "synthetic_fixture_urn",
+        "external_source_links": False,
+        "orchestration": orchestration_summary,
     }
 
 
@@ -404,6 +502,15 @@ def run_packaged_smoke(
             raise RuntimeError(
                 f"packaged runtime exited after static asset check ({process.returncode})"
             )
+        classroom_payload = _fetch_json(
+            f"http://127.0.0.1:{port}/api/classroom/bootstrap",
+            timeout_seconds=request_timeout_seconds,
+        )
+        classroom_summary = validate_classroom_payload(classroom_payload)
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"packaged runtime exited after classroom check ({process.returncode})"
+            )
         base_result = {
             "build_path": str(resolved_exe),
             "working_directory": str(resolved_working_directory),
@@ -411,6 +518,7 @@ def run_packaged_smoke(
             "port": port,
             "health": health_summary,
             "static": static_summary,
+            "classroom": classroom_summary,
         }
         if health_only:
             return {**base_result, "mode": "health_only", "orchestration": None}
@@ -482,7 +590,7 @@ def main() -> int:
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    print(_console_safe_json(result, getattr(sys.stdout, "encoding", None)), end="")
     return 0
 
 

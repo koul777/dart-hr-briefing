@@ -17,7 +17,29 @@ const companyQueries = (process.env.DART_QA_COMPANIES
   .map((value) => value.trim())
   .filter(Boolean);
 
+function progress(stage) {
+  process.stderr.write(`[qa-orchestration] ${stage}\n`);
+}
+
+async function waitForSignal(signal, label, timeoutMs = 15_000) {
+  let timer;
+  try {
+    await Promise.race([
+      signal,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} did not start within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function main() {
+  progress("browser launch");
   const browser = await chromium.launch({ executablePath: edgePath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
@@ -34,6 +56,7 @@ async function main() {
 
   try {
     await page.goto(appUrl, { waitUntil: "networkidle", timeout: 60_000 });
+    progress("application loaded");
     if (!companyQueries.length) throw new Error("at least one QA company is required");
     const firstQuery = companyQueries[0];
     const searchInput = page.locator("#companySearch");
@@ -89,6 +112,7 @@ async function main() {
     await searchInput.fill("");
     await page.locator("#compareButton").click();
     await page.locator("#dashboard:not(.hidden)").waitFor({ timeout: 120_000 });
+    progress("comparison loaded");
     const overviewContract = await page.evaluate(() => {
       const readout = document.querySelector(".dashboard > .readout-card");
       const tabContent = document.querySelector("#tabContent");
@@ -284,6 +308,7 @@ async function main() {
     ) {
       throw new Error(`decision brief contract failed: ${JSON.stringify(decisionBriefContract)}`);
     }
+    progress("decision and evidence contracts passed");
 
     const strategyTab = page.locator('[data-tab="strategy"]');
     const tabState = await page.locator('#tabs [role="tab"]').evaluateAll((tabs) => ({
@@ -554,7 +579,10 @@ async function main() {
     }));
     await page.route("**/api/financials/history?*", async (route) => {
       markHistoryStarted();
-      await new Promise((resolve) => { releaseHistory = resolve; });
+      await waitForSignal(
+        new Promise((resolve) => { releaseHistory = resolve; }),
+        "history route release",
+      );
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -563,7 +591,7 @@ async function main() {
     });
     await page.locator("#yearSelect").selectOption(alternateYear);
     await page.locator("#compareButton").click();
-    await historyStarted;
+    await waitForSignal(historyStarted, "history cancellation route");
     await page.locator("#reportSelect").selectOption(alternateReport);
     releaseHistory();
     await page.locator("#compareButton:not(:disabled)").waitFor({ timeout: 10_000 });
@@ -579,6 +607,7 @@ async function main() {
     ) {
       throw new Error(`stale comparison mutated committed state: ${JSON.stringify(atomicResult)}`);
     }
+    progress("atomic comparison cancellation passed");
     await page.unroute("**/api/financials/history?*");
     await page.unroute("**/api/people?*");
     await page.unroute("**/api/financials?*");
@@ -593,13 +622,17 @@ async function main() {
     await page.route("**/api/analysis", async (route) => {
       analysisHasEnteredKey = route.request().headers()["x-openai-api-key"] === "sk-browser-race-contract";
       markAnalysisStarted();
-      await new Promise((resolve) => { releaseAnalysis = resolve; });
+      await waitForSignal(
+        new Promise((resolve) => { releaseAnalysis = resolve; }),
+        "AI route release",
+      );
       await route.abort("failed").catch(() => {});
     });
     await page.locator("#openAiApiKey").fill("sk-browser-race-contract");
     await page.locator("#analysisPrompt").fill("오래된 응답이 남지 않는지 확인");
+    await page.locator("#aiTransferConsent").check();
     await page.locator("#runAiButton").click();
-    await analysisStarted;
+    await waitForSignal(analysisStarted, "AI cancellation route");
     if (!analysisHasEnteredKey) {
       throw new Error("first AI request did not carry the entered API key");
     }
@@ -628,7 +661,10 @@ async function main() {
     const periodAnalysisStarted = new Promise((resolve) => { markPeriodAnalysisStarted = resolve; });
     await page.route("**/api/analysis", async (route) => {
       markPeriodAnalysisStarted();
-      await new Promise((resolve) => { releasePeriodAnalysis = resolve; });
+      await waitForSignal(
+        new Promise((resolve) => { releasePeriodAnalysis = resolve; }),
+        "period-change AI route release",
+      );
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -640,7 +676,7 @@ async function main() {
     });
     await page.locator("#analysisPrompt").fill("기간 변경 취소 검증");
     await page.locator("#runAiButton").click();
-    await periodAnalysisStarted;
+    await waitForSignal(periodAnalysisStarted, "period-change AI route");
     await page.locator("#aiResult .pending").waitFor({ timeout: 10_000 });
     await page.locator("#yearSelect").selectOption(alternateYear);
     releasePeriodAnalysis();
@@ -653,6 +689,7 @@ async function main() {
     if (periodAiState.messages !== 0 || periodAiState.pending !== 0 || periodAiState.disabled) {
       throw new Error(`period change did not cancel AI request: ${JSON.stringify(periodAiState)}`);
     }
+    progress("AI cancellation contracts passed");
     await page.unroute("**/api/analysis");
     await page.locator("#yearSelect").selectOption(atomicBaseline.year);
 
@@ -958,6 +995,7 @@ async function main() {
     ) {
       throw new Error(`mobile decision copy contract failed: ${JSON.stringify(mobileDecisionCopy)}`);
     }
+    progress("mobile layout contracts passed");
     await page.screenshot({ path: mobileDecisionScreenshotPath, fullPage: false });
     const storagePage = await browser.newPage({ viewport: { width: 900, height: 700 } });
     const storageErrors = [];
@@ -1000,6 +1038,7 @@ async function main() {
     } finally {
       await searchRacePage.close();
     }
+    progress("storage and search-race contracts passed");
     const report = {
       ok: true,
       runId,
@@ -1040,6 +1079,7 @@ async function main() {
       fs.mkdirSync(path.dirname(resolvedReportPath), { recursive: true });
       fs.writeFileSync(resolvedReportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     }
+    progress("all contracts passed");
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } finally {
     await browser.close();

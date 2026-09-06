@@ -10,19 +10,39 @@ GitHub 저장소에 보관되고 실제 웹 주소로 접속할 수 있는 나�
 
 > 기업 선택 → OpenDART 조회 → HR 지표 계산 → 품질·개인정보 검증 → AI 브리핑 → GitHub·Vercel 배포
 
+### WEEK 1→2→3 학습 연결
+
+| 주차 | 산출물 | 다음 단계 |
+|---|---|---|
+| WEEK 1 면접 브리핑 에이전트 | 지원 자료를 구조화한 질문·확인 항목 | 개인 합격 예측이 아닌 검증 질문 구조를 WEEK 2로 연결 |
+| WEEK 2 DART HR Analytics 에이전트 | 공개 기업 공시의 근거·한계·결정 브리프 | 결정 브리프의 `다음 내부 데이터`를 WEEK 3 요구사항으로 연결 |
+| WEEK 3 데이터 빌더 | 합성 데이터로 정의한 필드·단위·집계수준·품질 규칙 | 개인정보 없이 내부 데이터 구조와 진단 도구를 검증 |
+
+`ready`는 성공확률이나 인사조치 권고가 아니라 정의된 공시 비교의 **근거 이용 가능성**을 뜻한다.
+결정 브리프의 `다음 내부 데이터`는 WEEK 3 데이터 빌더의 입력으로 이어지며, 실제 직원·지원자
+데이터가 아니라 합성 사례의 필드 정의와 검증 규칙으로 옮긴다.
+
+강사 수용 기준은 수강생이 `ready`의 의미를 정확히 설명하고, 결정 브리프 한 개의 `다음 내부 데이터`를
+필드명·단위·집계수준·검증 규칙이 있는 WEEK 3 입력 카드로 변환하며, 성공확률이나 개인 인사조치
+권고를 적지 않는 것이다.
+
 ---
 
 ## 전체 시간표
 
 | 시간 | 교육 모듈 | 완성 결과 |
 |---|---|---|
-| 13:00–13:50 | 모듈 1. 바이브 코딩 기본 활용법 — 이론 10분·실습 40분 | 수정 요청서와 첫 번째 코드 변경 |
+| 13:00–13:45 | 모듈 1. 바이브 코딩 기본 활용법 — 이론 10분·구현 35분 | 수정 요청서와 첫 번째 코드 변경 |
+| 13:45–13:50 | `m1` 저장·짝 점검·복구 전환 — 실습 5분 | 체크포인트 통과 또는 복구본 확보 |
 | 13:50–14:00 | 휴식 |  |
-| 14:00–14:50 | 모듈 2. OpenDART API 발급 및 대시보드 생성 — 이론 10분·실습 40분 | 비교기업·연도별 인력·보상·재무 대시보드 |
+| 14:00–14:45 | 모듈 2. OpenDART API 발급 및 대시보드 생성 — 이론 10분·구현 35분 | 비교기업·연도별 인력·보상·재무 대시보드 |
+| 14:45–14:50 | `m2` 저장·짝 점검·복구 전환 — 실습 5분 | 체크포인트 통과 또는 준비 화면 전환 |
 | 14:50–15:00 | 휴식 |  |
-| 15:00–15:50 | 모듈 3. HR Analytics 대시보드 고도화하기 — 이론 10분·실습 40분 | 인력·보상·생산성 비교와 AI HR 브리핑 |
+| 15:00–15:45 | 모듈 3. HR Analytics 대시보드 고도화하기 — 이론 10분·구현 35분 | 인력·보상·생산성 비교와 AI HR 브리핑 |
+| 15:45–15:50 | `m3` 저장·짝 점검·복구 전환 — 실습 5분 | 체크포인트 통과 또는 근거 대체 응답 확인 |
 | 15:50–16:00 | 휴식 |  |
-| 16:00–16:50 | 모듈 4. GitHub 저장 및 Vercel 배포 — 이론 10분·실습 40분 | GitHub 저장소와 공개 서비스 URL |
+| 16:00–16:40 | 모듈 4. GitHub 저장 및 Vercel 배포 — 이론 10분·구현 30분 | GitHub 저장소와 공개 서비스 URL |
+| 16:40–16:50 | `m4` 체크포인트·캡스톤 재현 — 실습 10분 | 저장소·공개 URL·근거 경계 재현 |
 | 16:50–17:00 | 결과 발표·검증 | 최종 작동 확인 |
 
 ### 시간 구성 기준
@@ -33,6 +53,21 @@ GitHub 저장소에 보관되고 실제 웹 주소로 접속할 수 있는 나�
 - 모듈 사이 휴식: 30분(10분 × 3회)
 - 결과 공유·최종 검증: 10분
 - 전체 과정: 240분(4시간)
+
+구현·저장·짝 점검·캡스톤을 합쳐 실습 160분으로 계산한다. 하드 체크포인트는
+13:45·14:45·15:45·16:40에 확인한다. **정시 통과율이 80% 미만이면**
+새 설명과 라이브 호출을 멈추고, 현재 작업을 보존한 채 검증된 체크포인트 복구본으로 전환한다.
+
+### 수업 시작 골든패스와 역할 경계
+
+1. 참가자는 수업 전에 `py -3.12 -X utf8 tools\classroom_preflight.py`를 실행해 `FAIL 0`과
+   비밀값 비노출을 확인한다. `py`가 없으면 Python 3.11 이상의 `python -X utf8`을 사용한다.
+2. 사전점검에서 로컬 `/api/classroom/bootstrap` JSON 계약을 1회 확인할 수 있다. 수업 중 JSON·
+   DevTools 대조는 강사가 시연하고, 참가자는 첫 화면의 **합성 샘플로 시작**을 눌러 화면 상태로 통과한다.
+3. 합성 모드는 실제 직원·지원자 데이터와 API 키 없이 사용한다. 로컬 bootstrap 호출은 1회이며
+   `network_requests=0`은 외부 OpenDART·AI provider 요청이 0회라는 뜻이다.
+4. 실데이터 OpenDART 요청은 timeout·429가 나면 **최초 요청 포함 최대 3회(재시도 최대 2회)**에서
+   멈추고 합성 fixture와 준비 화면으로 전환한다.
 
 ---
 
@@ -131,7 +166,7 @@ OpenDART API, Python 서버, HTML/CSS/JavaScript, Vercel
 교육용 저장소를 개인 작업 폴더에 준비하고 Claude Code를 실행한다.
 
 ```powershell
-git clone <교육용-GitHub-저장소-주소>
+git clone https://github.com/koul777/dart-hr-briefing.git
 cd dart-hr-briefing
 claude
 ```
@@ -480,6 +515,7 @@ HR Analytics 대시보드는 공시 숫자, 계산한 지표, AI 해석을 서�
 - 값이 없거나 분모가 0이면 지표를 계산하지 않는다.
 - 공시에서 확인되지 않은 원인을 AI가 만들어내지 않게 한다.
 - AI는 계산기가 아니라 검증된 지표의 해석과 후속 질문을 지원한다.
+- `ready`는 정의한 공시 비교의 근거 이용 가능성만 나타내며 성공확률이나 인사조치 실행 허가로 읽지 않는다.
 
 ### 3-2. 인력정보와 재무정보 연결 및 생산성 지표 계산 — 실습 7분
 
@@ -583,6 +619,8 @@ Claude Code 요청 예시:
 - 내부 이동률과 승진률
 
 위 내부 데이터와 KPI는 OpenDART에서 확인된 사실이 아니라 후속 검증 항목임을 명시한다.
+각 결정 브리프에서 `다음 내부 데이터` 한 항목을 골라 필드명·단위·집계수준·검증 규칙을 적은
+WEEK 3 데이터 빌더 입력 카드로 바꾼다. 실제 개인 데이터 대신 합성 예시값만 사용한다.
 
 ### 3-6. 후속 질문이 가능한 대화형 기능 추가 — 실습 6분
 
@@ -610,6 +648,7 @@ Claude Code 요청 예시:
 - 단위와 결측값이 처리된 비교표·추이 시각화
 - 확인된 사실과 HR 해석·가설이 구분된 AI 브리핑
 - 추가 내부 데이터와 KPI 제안
+- `ready`를 근거 이용 가능성으로 설명한 기록과 합성 WEEK 3 데이터 빌더 입력 카드 1장
 - 동일한 DART 근거로 이어가는 후속 질문 기능
 
 **15:50~16:00 휴식**
@@ -688,15 +727,25 @@ git ls-files .env
 
 ```powershell
 git remote -v
+# 아래 URL을 반드시 본인의 교육용 GitHub 저장소 주소로 바꿉니다.
+git remote add course-origin https://github.com/<github-user>/dart-hr-briefing.git
+git remote get-url course-origin
 git status
-git add -A
+git check-ignore .env
+python -X utf8 tools/release_secret_scan.py --root .
+git diff --name-only
+git add README.md HR_BRIEFING_RULES.md .env.example server.py workforce_analytics.py orchestrator.py agent_orchestration.py openai_responses_adapter.py static api vercel.json .vercelignore .python-version pyproject.toml uv.lock
 git status
-git diff --cached --name-only
+git diff --cached
 git commit -m "Build OpenDART AI HR briefing dashboard"
-git push origin main
+git push course-origin HEAD:main
 ```
 
-GitHub 웹 화면에서 프로젝트 파일, 최근 커밋, README가 정상적으로 표시되는지 확인한다.
+이미 `course-origin`이 있다면 `git remote set-url course-origin <본인 저장소 URL>`로
+주소를 바로잡는다. `git remote get-url course-origin`의 소유자·저장소명이 본인 저장소와
+정확히 일치할 때만 푸시한다. `HEAD:main`은 현재 로컬 브랜치 이름과 관계없이 검토한
+현재 커밋을 교육용 저장소의 `main`으로 보낸다. GitHub 웹 화면에서 프로젝트 파일,
+최근 커밋, README가 정상적으로 표시되는지 확인한다.
 
 ### 4-4. Vercel·GitHub 연결과 환경변수 등록 — 실습 8분
 

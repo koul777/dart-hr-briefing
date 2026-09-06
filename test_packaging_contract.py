@@ -1,14 +1,38 @@
 from __future__ import annotations
 
+import ast
 import tomllib
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent
 
 
+def _module_string_constant(relative_path: str, name: str) -> str:
+    tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            return node.value.value
+    raise AssertionError(f"missing string constant: {relative_path}:{name}")
+
+
 class PackagingContractTests(unittest.TestCase):
+    def test_release_version_is_consistent_across_package_runtime_and_smoke(self) -> None:
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            {
+                project["project"]["version"],
+                _module_string_constant("server.py", "APP_VERSION"),
+                _module_string_constant("tools/post_deploy_smoke.py", "APP_VERSION"),
+            },
+            {"0.2.0"},
+        )
+
     def test_frozen_bundle_includes_v2_schema_and_frontend_assets(self) -> None:
         spec = (ROOT / "DARTStructure.spec").read_text(encoding="utf-8")
         self.assertIn("('static', 'static')", spec)
@@ -22,6 +46,7 @@ class PackagingContractTests(unittest.TestCase):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         runtime_dependencies = project["project"]["dependencies"]
         build_dependencies = project["project"]["optional-dependencies"]["build"]
+        dev_dependencies = project["project"]["optional-dependencies"]["dev"]
         setuptools_config = project["tool"]["setuptools"]
 
         self.assertTrue(
@@ -33,12 +58,30 @@ class PackagingContractTests(unittest.TestCase):
         self.assertEqual(project["build-system"]["build-backend"], "setuptools.build_meta")
         self.assertIn("server", setuptools_config["py-modules"])
         self.assertIn("agent_orchestration", setuptools_config["py-modules"])
+        self.assertIn("classroom_mode", setuptools_config["py-modules"])
         self.assertIn("api", setuptools_config["packages"])
-        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
-            encoding="utf-8"
+        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8")
+        self.assertEqual(
+            workflow.count('python -m pip install --upgrade "pip>=26.2.1,<27"'),
+            2,
         )
-        self.assertIn('python -m pip install -e ".[dev]"', workflow)
-        self.assertIn('python -m pip install -e ".[build]"', workflow)
+        self.assertTrue(
+            any(requirement.startswith("pip-audit") for requirement in dev_dependencies)
+        )
+        self.assertEqual(workflow.count("uv sync --locked"), 2)
+        self.assertIn("uv sync --locked --extra dev", workflow)
+        self.assertIn("uv sync --locked --extra build", workflow)
+        self.assertIn(
+            'uv sync --locked --extra dev --python "${{ matrix.python-version }}"',
+            workflow,
+        )
+        self.assertIn("Verify matrix interpreter was not replaced by .python-version", workflow)
+        self.assertIn("sys.version_info[:2]", workflow)
+        self.assertIn('uv sync --locked --extra build --python "3.12"', workflow)
+        for version in ("3.11", "3.12", "3.13", "3.14"):
+            self.assertIn(f'"{version}"', workflow)
+        self.assertIn("ruff check . --select E4,E7,E9,F", workflow)
+        self.assertIn("python -m pip_audit --local", workflow)
         self.assertIn(
             'RUNTIME_ENV.get("DART_STRICT_ORCHESTRATION_SCHEMA", "true")',
             (ROOT / "server.py").read_text(encoding="utf-8"),

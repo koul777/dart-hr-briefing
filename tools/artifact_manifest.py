@@ -13,8 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACTS = (
     ROOT / "agent_orchestration.py",
     ROOT / "analysis_contract.py",
+    ROOT / "classroom_mode.py",
     ROOT / "runtime_controls.py",
     ROOT / "schemas" / "workforce_orchestration_v2.schema.json",
+    ROOT / "seed" / "classroom_workforce_2024_11011.json",
     ROOT / "fixtures" / "workforce" / "representative_2024_11011.json",
     ROOT / "fixtures" / "workforce" / "edge_cases_2024_11011.json",
     ROOT / "orchestration.workflow.json",
@@ -56,6 +58,8 @@ def _latest_smoke_for_build(root: Path, executable: Path | None) -> Path | None:
     smoke_candidates = (
         *session_dir.glob("packaged-runtime-smoke-*.json"),
         *session_dir.glob("packaged-smoke-*.json"),
+        *session_dir.glob("smoke-final-*.json"),
+        *session_dir.glob("smoke-release-*.json"),
     )
     if executable is None:
         matches = sorted(

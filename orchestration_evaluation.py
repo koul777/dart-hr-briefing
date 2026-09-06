@@ -18,13 +18,26 @@ from agent_orchestration import (
     DECISION_COHORT_LIMIT,
     DECISION_DIMENSION_SPECS,
     DECISION_METRIC_SPECS,
+    PERSON_REFERENCE_CONTEXT_PATTERN,
+    _claim_clauses,
+    _claim_text_segments,
+    _contains_automated_hr_action_recommendation,
+    _contains_credential_literal,
+    _contains_explicit_credential_literal,
+    _contains_direct_identifier_literal,
+    _contains_direct_personal_identifier_literal,
     _contains_fabricated_person_judgment,
+    _contains_protected_characteristic_judgment,
+    _contains_prompt_personal_identifier_literal,
+    _contains_structured_hr_action_recommendation,
     _contains_unsupported_causal_assertion,
     _decision_action,
     _build_strategy_context,
     _decision_peer_positions,
     _decision_position_conclusion,
     _possible_fabricated_person_reference,
+    _possible_named_person_reference,
+    _uncited_factual_claims,
 )
 
 
@@ -102,13 +115,7 @@ def _assessment_count(assessment: Mapping[str, Any]) -> int:
 
 
 def _claim_segments(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return value.splitlines() or [value]
-    if isinstance(value, Mapping):
-        return [segment for child in value.values() for segment in _claim_segments(child)]
-    if isinstance(value, (list, tuple)):
-        return [segment for child in value for segment in _claim_segments(child)]
-    return []
+    return _claim_text_segments(value)
 
 
 def _numeric_claims(text: str) -> list[tuple[float, str, float]]:
@@ -795,6 +802,18 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
         failures.append("completed_provider_without_passed_validation")
     if provider_status == "rejected" and provider.get("result") is not None:
         failures.append("rejected_provider_retained_result")
+    elif provider_status != "completed" and provider.get("result") is not None:
+        failures.append("noncompleted_provider_retained_result")
+    if result.get("provider_result") is not None:
+        try:
+            provider_result_matches = (
+                _provider_text(result.get("provider_result"))
+                == _provider_text(provider.get("result"))
+            )
+        except (TypeError, ValueError, RecursionError):
+            provider_result_matches = False
+        if not provider_result_matches:
+            failures.append("provider_result_alias_mismatch")
     if provider_validation_status == "rejected" and provider_status != "rejected":
         failures.append("provider_validation_status_mismatch")
     response_validation = (
@@ -806,13 +825,75 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
         failures.append("response_validation_not_passed")
 
     try:
+        if not isinstance(provider.get("result"), str):
+            json.dumps(
+                provider.get("result"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
         provider_text = _provider_text(provider.get("result"))
     except (TypeError, ValueError, RecursionError):
         provider_text = ""
         failures.append("invalid_provider_output_shape")
+    privacy_surfaces = (
+        result.get("request"),
+        provider.get("result"),
+        provider.get("error"),
+        result.get("provider_result"),
+        result.get("prompt_handoff"),
+    )
+    try:
+        privacy_literal_exposed = any(
+            _contains_direct_personal_identifier_literal(privacy_surface)
+            for privacy_surface in privacy_surfaces
+        )
+    except RecursionError:
+        privacy_literal_exposed = False
+    for privacy_surface in (result.get("request"), provider.get("result")):
+        try:
+            privacy_surface_text = _provider_text(privacy_surface)
+        except (TypeError, ValueError, RecursionError):
+            continue
+        if _contains_direct_identifier_literal(privacy_surface):
+            privacy_literal_exposed = True
+        if (
+            PERSON_REFERENCE_CONTEXT_PATTERN.search(privacy_surface_text)
+            and _possible_named_person_reference(privacy_surface_text, records)
+        ):
+            privacy_literal_exposed = True
+    for privacy_surface in (
+        result.get("provider_result"),
+        result.get("prompt_handoff"),
+        provider.get("error"),
+    ):
+        try:
+            if (
+                _contains_direct_personal_identifier_literal(privacy_surface)
+                or _contains_explicit_credential_literal(privacy_surface)
+                or _contains_credential_literal(privacy_surface)
+            ):
+                privacy_literal_exposed = True
+        except RecursionError:
+            continue
+    if (
+        _contains_prompt_personal_identifier_literal(result.get("prompt"))
+        or _contains_explicit_credential_literal(result.get("prompt"))
+    ):
+        privacy_literal_exposed = True
+    if privacy_literal_exposed:
+        failures.append("privacy_literal_exposed")
     if provider_status == "completed" and provider_text:
         if _contains_unsupported_causal_assertion(provider_text):
             failures.append("provider_causal_policy_mismatch")
+        if (
+            _contains_automated_hr_action_recommendation(provider_text)
+            or _contains_structured_hr_action_recommendation(provider.get("result"))
+        ):
+            failures.append("provider_automated_hr_action_policy_mismatch")
+        if _contains_protected_characteristic_judgment(provider_text):
+            failures.append("provider_protected_characteristic_policy_mismatch")
         if _contains_fabricated_person_judgment(provider_text, records):
             failures.append("provider_person_judgment_policy_mismatch")
         elif _possible_fabricated_person_reference(provider_text, records):
@@ -968,6 +1049,15 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
         for item in provider_evidence
         if item.get("evidence_id")
     }
+    try:
+        unsupported_factual_claims = _uncited_factual_claims(
+            provider.get("result"),
+            provider_evidence_keys,
+        )
+    except RecursionError:
+        unsupported_factual_claims = []
+        if "invalid_provider_output_shape" not in failures:
+            failures.append("invalid_provider_output_shape")
     unknown_citations = sorted(
         citation for citation in cited_ids if citation.casefold() not in ledger_evidence_keys
     )
@@ -984,7 +1074,11 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
     if outside_context_citations:
         failures.append("citations_outside_provider_context")
     try:
-        provider_claim_segments = _claim_segments(provider.get("result"))
+        provider_claim_segments = [
+            clause
+            for segment in _claim_segments(provider.get("result"))
+            for clause in (_claim_clauses(segment) or [segment])
+        ]
     except RecursionError:
         provider_claim_segments = []
         failures.append("invalid_provider_output_shape")
@@ -1017,6 +1111,8 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
                     "cited_evidence_ids": sorted(segment_ids),
                 })
     if provider_status == "completed":
+        if unsupported_factual_claims:
+            failures.append("provider_factual_claim_without_citation")
         if uncited_numeric_lines:
             failures.append("provider_numeric_claim_without_citation")
         if unsupported_numeric_claims:
@@ -1095,6 +1191,7 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
             "orphaned_evidence_ids": orphaned_evidence,
             "uncited_numeric_line_numbers": uncited_numeric_lines,
             "unsupported_numeric_claims": unsupported_numeric_claims,
+            "unsupported_factual_claims": unsupported_factual_claims,
             "invalid_decision_support_evidence_ids": sorted(set(invalid_decision_evidence_ids)),
             "invalid_decision_support_peer_contexts": sorted(set(invalid_peer_contexts)),
             "invalid_decision_support_metric_assessments": sorted(set(invalid_metric_assessments)),

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import socket
 import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from classroom_mode import build_classroom_payload
 
 
 ROOT = Path(__file__).resolve().parent
@@ -72,6 +75,11 @@ class PackagedRuntimeSmokeTests(unittest.TestCase):
                 "api_key_configured": True,
                 "strict_schema_enabled": True,
                 "strict_schema_validator_ready": True,
+                "classroom_sample": {
+                    "available": True,
+                    "endpoint": "/api/classroom/bootstrap",
+                    "network_requests": 0,
+                },
                 "runtime": {
                     "dart_cache": {},
                     "rate_limiter": {},
@@ -85,6 +93,7 @@ class PackagedRuntimeSmokeTests(unittest.TestCase):
         self.assertTrue(summary["api_key_configured"])
         self.assertTrue(summary["strict_schema_enabled"])
         self.assertTrue(summary["strict_schema_validator_ready"])
+        self.assertTrue(summary["classroom_sample_available"])
         self.assertEqual(summary["runtime_keys"], ["dart_cache", "rate_limiter"])
 
     def test_validate_static_html_requires_bundled_application_assets(self) -> None:
@@ -99,9 +108,10 @@ class PackagedRuntimeSmokeTests(unittest.TestCase):
             smoke.validate_static_html("<title>wrong app</title>")
         assets = smoke.validate_static_assets(
             "averageSalaryAggregateLabel strategyMetricQualityDetail 평균 급여 계산 기준 "
-            "setActiveSearchOption relativeComparisonBoundary strategy-load-notice safeStorageGet",
+            "setActiveSearchOption relativeComparisonBoundary strategy-load-notice safeStorageGet "
+            "loadClassroomMode /api/classroom/bootstrap provider_data_consent",
             ".strategy-metric-quality .people-salary-basis .comparison-boundary "
-            ".strategy-load-notice .result-item.active",
+            ".strategy-load-notice .result-item.active .sample-banner .ai-transfer-notice",
         )
         self.assertTrue(assets["app_js_ok"])
         self.assertTrue(assets["styles_css_ok"])
@@ -109,7 +119,7 @@ class PackagedRuntimeSmokeTests(unittest.TestCase):
             smoke.validate_static_assets(
                 "old bundle",
                 ".strategy-metric-quality .people-salary-basis .comparison-boundary "
-                ".strategy-load-notice .result-item.active",
+                ".strategy-load-notice .result-item.active .sample-banner .ai-transfer-notice",
             )
         security_headers = {
             "Strict-Transport-Security": "max-age=31536000",
@@ -134,6 +144,35 @@ class PackagedRuntimeSmokeTests(unittest.TestCase):
                     "evidence": {"ledger": [{"evidence_id": "EV-1"}]},
                 }
             )
+
+    def test_validate_classroom_payload_uses_synthetic_zero_network_contract(self) -> None:
+        summary = smoke.validate_classroom_payload(build_classroom_payload())
+
+        self.assertTrue(summary["sample_enabled"])
+        self.assertEqual(summary["fixture_id"], "dart-hr-briefing-classroom-v1")
+        self.assertEqual(summary["network_requests"], 0)
+        self.assertEqual(summary["company_count"], 2)
+        self.assertEqual(summary["source"], "synthetic_fixture")
+        self.assertEqual(summary["reference_mode"], "synthetic_fixture_urn")
+        self.assertFalse(summary["external_source_links"])
+        self.assertEqual(summary["orchestration"]["provider_status"], "not_configured")
+
+        invalid = build_classroom_payload()
+        invalid["sample"]["network_requests"] = 1
+        with self.assertRaisesRegex(ValueError, "synthetic and zero-network"):
+            smoke.validate_classroom_payload(invalid)
+
+        untrusted_provenance = build_classroom_payload()
+        untrusted_provenance["sample"]["provenance"]["source_data_used"] = True
+        with self.assertRaisesRegex(ValueError, "synthetic and zero-network"):
+            smoke.validate_classroom_payload(untrusted_provenance)
+
+        leaked = build_classroom_payload()
+        leaked["results"][0]["source_url"] = (
+            "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20991231999999"
+        )
+        with self.assertRaisesRegex(ValueError, "filing URLs or receipt numbers"):
+            smoke.validate_classroom_payload(leaked)
 
     def test_validate_orchestration_payload_requires_non_empty_ledger(self) -> None:
         with self.assertRaisesRegex(ValueError, "non-empty evidence ledger"):
@@ -226,6 +265,15 @@ class PackagedRuntimeSmokeTests(unittest.TestCase):
         self.assertEqual(args.startup_timeout_seconds, 60.0)
         self.assertEqual(args.working_directory, Path.cwd())
         self.assertFalse(args.health_only)
+
+    def test_console_json_falls_back_to_ascii_when_codepage_cannot_encode(self) -> None:
+        payload = {"watermark": "SAMPLE — SYNTHETIC DATA", "company": "샘플전자"}
+
+        rendered = smoke._console_safe_json(payload, "cp949")
+
+        self.assertIn("SAMPLE \\u2014 SYNTHETIC DATA", rendered)
+        self.assertIn("\\uc0d8\\ud50c\\uc804\\uc790", rendered)
+        self.assertEqual(json.loads(rendered), payload)
 
     def test_invalid_runtime_options_fail_before_process_start(self) -> None:
         executable = ROOT / "tools" / "packaged_runtime_smoke.py"

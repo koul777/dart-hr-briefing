@@ -3,17 +3,28 @@
 !.env.example
 __pycache__/
 *.egg-info/
+.venv/
+venv/
+env/
+node_modules/
 data/
 .coverage
 
 # Local build, cache, and browser QA artifacts
 build/
+/reports/*/
 .pytest_cache/
 .ruff_cache/
 .playwright-cli/
+*.bin
+*.zip
+*.7z
+*.pptx
+*.exe
 *.previous.exe
 *.visual-check.*
 /DARTStructure.exe
+/dist/*.release.json
 
 # Generated visual QA intermediates (the README uses the final PNG/GIF only)
 docs/assets/*-preview.png
@@ -21,7 +32,6 @@ docs/assets/*.mp4
 !docs/assets/dart-workforce-demo.mp4
 docs/assets/dashboard-browser.png
 docs/assets/dashboard-home-content.png
-reports/overnight_sessions/
 video_work/
 training_deck/
 /promo_video/node_modules/

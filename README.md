@@ -15,14 +15,49 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 | 항목 | 현재 상태 |
 | --- | --- |
 | 운영 URL | [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app) |
+| 릴리스 상태 | v0.2.0. 운영 URL의 실제 리비전은 `/api/health`의 `build_id`와 배포 대상 commit SHA를 대조해 확인합니다. |
 | 데이터 | OpenDART 재무·직원·임원 공시, 기업 단위 집계 |
 | AI | 사용자가 입력한 OpenAI API Key로 명시적 실행 |
 | 안전장치 | 개인정보·근거·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
-| 검증 | Python 3.12 회귀 테스트 306개, 프론트엔드 JavaScript 구문 검사 |
-| 강의 자료 | 로컬 `training_deck/training_deck.pptx`, 16:9 56장·발표자 노트 56장 |
+| 검증 | Python 3.11~3.14 전체 회귀, coverage·lint·프론트엔드 구문·Windows 패키지 smoke 검사 |
+| 강의 자료 | 최종 편성 기준 16:9 총 60장(본문 42장·부록 18장). 원고·발표자 노트·자산 계약은 `training_deck/final_60/` 기준 |
 | 홍보영상 | [`docs/assets/dart-hr-briefing-promo.mp4`](docs/assets/dart-hr-briefing-promo.mp4), 1920×1080·30fps·36.2초 |
 
-`training_deck/`에는 원본 슬라이드 이미지와 생성 프롬프트까지 포함되어 용량이 크므로 Git과 Vercel 배포에서는 제외합니다. 최종 PPT는 로컬 산출물로 보존하고, 교육 내용과 재현 절차는 저장소의 커리큘럼 문서로 관리합니다.
+운영 URL의 기능 여부는 문구만 믿지 않고 [`docs/PRODUCTION_RELEASE_CHECKLIST.md`](docs/PRODUCTION_RELEASE_CHECKLIST.md)의
+`/api/health` 빌드 ID와 합성 bootstrap 계약으로 확인합니다. 릴리스 때마다 배포 대상 SHA를 전달한
+post-deploy smoke가 root·정적 자산·소스 비공개·합성 데이터 계약을 함께 확인합니다.
+
+### 이번 릴리스 변경사항
+
+- **교육용 무네트워크 경로:** 첫 화면의 `합성 샘플로 시작`으로 두 가상 기업을 불러오며,
+  실제 기업·개인정보·OpenDART·AI 호출 없이 전체 비교와 Strategy Brief를 실습할 수 있습니다.
+- **HR Analytics 에이전트 강화:** 생산성·보상 지속가능성·인력구조·거버넌스·근거 완전성을
+  3개 결정 브리프와 5개 readiness 차원으로 연결하고, 모든 수치에 evidence ID를 유지합니다.
+- **AI 안전 경계 강화:** 개인정보, 근거 없는 수치·인과, 개인 평가, 채용·승진·보상·해고 같은
+  자동 인사조치 권고를 일반 문장과 중첩 JSON 모두에서 검사하고, 차단 시 검증된 근거 대체 응답만 표시합니다.
+- **실패 복구와 요청 예산:** OpenDART 재시도·fan-out·deadline을 제한하고, 기업·기간 변경 시
+  진행 중인 비교와 AI 요청을 취소해 오래된 응답이 새 화면을 덮지 못하게 했습니다.
+- **릴리스 보안:** Windows 실행 파일 preflight·strict smoke, Vercel function-first·default-deny
+  업로드 목록, 배포 후 commit SHA·합성 계약·소스 비공개 검사, 비밀·대용량 파일 차단을 CI에 추가했습니다.
+- **강의 운영 자료:** 4시간 실습 커리큘럼, 강사용·참가자용 런북, 실제 화면 중심 README와
+  16:9 총 60장 강의 덱의 원고·발표자 노트·검증 계약을 정리했습니다.
+
+`training_deck/`에는 원본 슬라이드 이미지와 생성 프롬프트까지 포함되어 용량이 크므로 Git과 Vercel
+배포에서는 제외합니다. 최종 편성의 기준 원고는 `training_deck/final_60/outline.md`, 발표자 노트는
+`training_deck/final_60/speech.md`, 구조 계약은 `training_deck/final_60/deck_spec.json`입니다. 조립된
+PPTX는 로컬 산출물로 보존하며, 실제 수업 투입 전 [PPT 정렬 계획](docs/PPT_ALIGNMENT_PLAN.md)의 렌더·
+증거 게이트를 통과해야 합니다.
+
+### 강의 운영 불변식
+
+- 수업은 **본문 42장**으로 4시간 골든패스를 운영하고 **부록 18장**은 질문·복구 때만 엽니다.
+- 각 하드 체크포인트의 **정시 통과율이 80% 미만**이면 현재 작업을 보존하고 검증된 복구본으로
+  전환합니다.
+- 같은 OpenDART 요청은 **최초 요청 포함 최대 3회**, 즉 **재시도 최대 2회**에서 멈추고 합성
+  샘플 또는 준비 화면으로 전환합니다.
+- **사람의 역할**은 입력 범위 선택, 전송 동의, 공시 원문·근거 확인과 최종 판단 책임입니다.
+  **AI의 역할**은 공개 기업 단위 집계의 근거 있는 요약·해석 초안이며 개인 평가·인과 단정·자동
+  인사조치를 결정하거나 권고하지 않습니다.
 
 ## 홍보영상
 
@@ -54,36 +89,65 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 
 아래 안내 이미지는 모두 실제 서비스 화면입니다. **이미지를 클릭하면 원본 크기로 확대**해 버튼 위치와 수치를 확인할 수 있습니다.
 
+> **교육·예시 데이터 원칙:** 합성 fixture로 흐름을 먼저 확인하고, 실제 조회가 필요할 때는
+> 삼성전자·SK하이닉스처럼 공개된 기업 단위 OpenDART 공시만 사용합니다. 실제 직원·지원자의
+> 이름, 연락처, 이메일, 사번, 이력서, 평가·보상·건강·노조 정보는 프롬프트·소스·CSV·캡처에
+> 입력하지 않습니다. 자세한 준비 절차는 [참가자 사전점검](docs/PARTICIPANT_PREFLIGHT.md)을
+> 따릅니다.
+
 ### 1. 실행 방식 선택
 
 | 상황 | 실행 방법 | 키 설정 |
 | --- | --- | --- |
 | 바로 체험 | [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app) 접속 | OpenDART 키는 서버에 구성됨. AI를 쓸 때만 본인의 OpenAI 키 입력 |
 | Windows 단일 실행 | `dist\DARTStructure.exe` 실행 후 표시된 로컬 주소 접속 | 최초 실행 전에 `OPENDART_API_KEY` 환경변수 설정 |
-| 소스 개발 | `python server.py` 실행 후 `http://127.0.0.1:8000` 접속 | 프로젝트 루트 `.env` 사용 |
+| 소스 개발 | `python server.py` 실행 후 `http://127.0.0.1:8765` 접속 | 프로젝트 루트 `.env` 사용 |
 
 공개 URL과 로컬 실행 화면이 다르거나 다른 프로그램이 나타나면 먼저
-`/api/health`를 확인합니다. 응답의 `app.id`가 `dart-hr-briefing`이 아니면
+`/api/health`를 확인합니다. 응답의 `app.id`가 `kr.opendart.dart-hr-briefing`이 아니면
 현재 주소·포트를 다른 프로세스가 사용하고 있는 것입니다.
 
 ```powershell
 Invoke-RestMethod https://dart-ruby-zeta.vercel.app/api/health
 # 로컬 실행 확인
-Invoke-RestMethod http://127.0.0.1:8000/api/health
+Invoke-RestMethod http://127.0.0.1:8765/api/health
 ```
 
 <p align="center">
-  <a href="promo_video/public/screens/app-home.png"><img src="promo_video/public/screens/app-home.png" width="100%" alt="DART HR Briefing 첫 화면과 주요 조작 영역" /></a>
-  <br><sub><b>화면 1.</b> 상단에서 기준연도·보고서를 정하고, 왼쪽에서 기업 선택과 AI 브리핑을 실행합니다.</sub>
+  <a href="docs/assets/classroom-sample-entry.png"><img src="docs/assets/classroom-sample-entry.png" width="100%" alt="합성 샘플 시작 버튼이 포함된 DART HR Briefing 첫 화면" /></a>
+  <br><sub><b>화면 1.</b> 왼쪽의 합성 샘플로 시작하거나, 상단 기준연도·보고서를 정한 뒤 공개 기업을 선택합니다.</sub>
 </p>
 
-### 2. API 키 준비
+### 2. 합성 샘플로 골든패스 확인
+
+OpenDART 키나 네트워크 상태와 무관하게 교육 흐름을 먼저 검증하려면 첫 화면의
+**합성 샘플로 시작**을 누릅니다.
+
+1. 두 가상 기업과 2024년 사업보고서 fixture가 한 번에 로드됩니다.
+2. 화면 위의 `SAMPLE — SYNTHETIC DATA` 배너와 `외부 호출 없음`(외부 OpenDART·AI 요청 0회)
+   상태를 확인합니다.
+3. Overview부터 Strategy Brief까지 탭을 둘러보고 **합성 결정 브리핑 만들기**를 실행합니다.
+4. 샘플의 근거 ID는 교육용이며 DART 원문 링크를 제공하지 않습니다.
+5. 실제 공시 조회로 전환할 때는 **실데이터 화면으로 돌아가기**를 누릅니다.
+
+샘플 endpoint인 `GET /api/classroom/bootstrap`도 같은 fixture를 반환하며
+`network_requests: 0`, `contains_real_company_data: false`,
+`contains_personal_data: false` 계약을 유지합니다. `fixture_id`와 `provenance`에는
+`source_data_used: false`, `third_party_content_used: false`가 함께 고정되어 실제 공시를
+가공한 자료처럼 오인하거나 출처가 불명확한 샘플로 교체하는 회귀를 차단합니다.
+
+<p align="center">
+  <a href="docs/assets/classroom-sample-ui.png"><img src="docs/assets/classroom-sample-ui.png" width="100%" alt="합성 샘플 모드에서 두 가상 기업과 SAMPLE 배너가 표시된 화면" /></a>
+  <br><sub><b>화면 2.</b> 합성 샘플은 두 가상 기업을 자동 선택하고 실제 데이터·개인정보·외부 API 호출이 없는 상태를 화면에 고정 표시합니다.</sub>
+</p>
+
+### 3. API 키 준비
 
 - **OpenDART API Key** — 기업 검색과 공시 데이터 조회에 필요합니다. 공개 URL에서는 서버가 관리하고, 로컬에서는 `.env`의 `OPENDART_API_KEY`에 입력합니다.
 - **OpenAI API Key** — AI HR 브리핑을 실행할 때만 선택적으로 필요합니다. 화면 왼쪽 입력란에 직접 넣으며 브라우저 저장소나 서버 파일에 저장하지 않습니다.
 - `.env`, 실제 키, 개인·고객 데이터는 Git에 커밋하지 않습니다. `.env.example`에는 변수 이름만 유지합니다.
 
-### 3. 기업 비교 실행
+### 4. 기업 비교 실행
 
 1. 화면 상단에서 **기준연도**와 **보고서**를 선택합니다.
 2. 왼쪽 **기업 추가**에 기업명·종목코드·DART 고유번호를 입력합니다.
@@ -94,13 +158,13 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 
 <p align="center">
   <a href="promo_video/public/screens/companies-selected.png"><img src="promo_video/public/screens/companies-selected.png" width="48%" alt="삼성전자와 SK하이닉스를 비교 기업으로 선택한 화면" /></a>
-  <br><sub><b>화면 2.</b> 비교 기업은 왼쪽 목록에서 확인합니다. 예시는 삼성전자와 SK하이닉스 2개 기업을 선택한 상태입니다.</sub>
+  <br><sub><b>화면 3.</b> 비교 기업은 왼쪽 목록에서 확인합니다. 예시는 삼성전자와 SK하이닉스 2개 기업을 선택한 상태입니다.</sub>
 </p>
 
 > 기준연도, 보고서 또는 기업 목록을 바꾸면 이전 비교·Strategy Brief·AI 대화의
 > 입력 조건이 달라집니다. 화면 안내에 따라 **인력·보상 비교**를 다시 실행하세요.
 
-### 4. 분석 탭 읽기
+### 5. 분석 탭 읽기
 
 | 탭 | 확인할 내용 | 해석할 때 주의할 점 |
 | --- | --- | --- |
@@ -120,15 +184,15 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 
 <p align="center">
   <a href="promo_video/public/screens/tab-overview.png"><img src="promo_video/public/screens/tab-overview.png" width="100%" alt="Overview 탭의 핵심 KPI와 비교 차트" /></a>
-  <br><sub><b>화면 3.</b> Overview에서는 전년 대비 변화, 핵심 KPI와 기업별 재무 규모를 먼저 훑습니다.</sub>
+  <br><sub><b>화면 4.</b> Overview에서는 전년 대비 변화, 핵심 KPI와 기업별 재무 규모를 먼저 훑습니다.</sub>
 </p>
 
 <p align="center">
   <a href="promo_video/public/screens/tab-compare.png"><img src="promo_video/public/screens/tab-compare.png" width="100%" alt="Compare 탭의 기업별 핵심 재무지표 표" /></a>
-  <br><sub><b>화면 4.</b> Compare에서는 같은 공시 기준의 원값과 비율을 나란히 확인합니다.</sub>
+  <br><sub><b>화면 5.</b> Compare에서는 같은 공시 기준의 원값과 비율을 나란히 확인합니다.</sub>
 </p>
 
-### 5. Strategy Brief와 근거 확인
+### 6. Strategy Brief와 근거 확인
 
 1. **Strategy Brief** 탭에서 생산성·보상 지속가능성·인력구조·리더십 연속성·근거 연결 완전성의 준비도를 확인합니다.
 2. 각 Decision Brief의 대표지표, 선택 기업 중앙값 위치, confidence, 알 수 없는 것과 **다음 판단 행동**을 함께 읽습니다.
@@ -138,44 +202,46 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 
 <p align="center">
   <a href="promo_video/public/screens/tab-strategy.png"><img src="promo_video/public/screens/tab-strategy.png" width="100%" alt="Strategy Brief의 보상 대시보드와 Decision Brief" /></a>
-  <br><sub><b>화면 5.</b> Strategy Brief는 판단 신호와 한계, 다음 확인 행동을 한 카드에서 읽도록 구성했습니다.</sub>
+  <br><sub><b>화면 6.</b> Strategy Brief는 판단 신호와 한계, 다음 확인 행동을 한 카드에서 읽도록 구성했습니다.</sub>
 </p>
 
 <p align="center">
   <a href="promo_video/public/screens/strategy-evidence.png"><img src="promo_video/public/screens/strategy-evidence.png" width="100%" alt="Strategy Brief의 Source Links, Quality Gate, AI Policy와 Trace" /></a>
-  <br><sub><b>화면 6.</b> 아래쪽 근거 영역에서 DART 원문, 품질 게이트, AI 정책과 에이전트 실행 이력을 함께 검증합니다.</sub>
+  <br><sub><b>화면 7.</b> 아래쪽 근거 영역에서 DART 원문, 품질 게이트, AI 정책과 에이전트 실행 이력을 함께 검증합니다.</sub>
 </p>
 
 `ready`는 자동 의사결정 허가가 아니라 현재 비교 범위에서 근거 연결이 상대적으로
 충분하다는 뜻입니다. 채용·보상·감축·평가·승계 조치를 정하려면 카드에 표시된
 내부 HRIS·평가·보상 원장·설문 데이터를 별도로 확인해야 합니다.
 
-### 6. AI HR 브리핑 사용
+### 7. AI HR 브리핑 사용
 
 1. 기업 비교를 먼저 실행합니다.
 2. 왼쪽 **OpenAI API Key**에 본인의 키를 입력합니다.
 3. 예시 질문을 누르거나 최대 4,000자의 질문을 직접 작성합니다.
-4. **AI에게 질문하기**를 누르거나 입력창에서 `Ctrl+Enter`를 사용합니다.
-5. 답변의 **확인된 사실·해석·가설·추가 검증 데이터·KPI**를 구분해 읽고, 근거 ID와 DART 원문을 대조합니다.
-6. 같은 기업·연도·보고서에서는 후속 질문을 이어갈 수 있습니다. **대화 지우기**는 현재 대화만 초기화합니다.
-7. **분석 프롬프트 복사**는 같은 구조의 근거 중심 질문을 다른 AI 도구에서 재사용할 때 씁니다.
+4. 질문과 공개 기업 집계가 선택한 AI 제공자에 전송된다는 안내를 읽고 **전송 동의**를 체크합니다.
+5. **AI에게 질문하기**를 누르거나 입력창에서 `Ctrl+Enter`를 사용합니다.
+6. 답변의 **확인된 사실·해석·가설·추가 검증 데이터·KPI**를 구분해 읽고, 근거 ID와 DART 원문을 대조합니다.
+7. 같은 기업·연도·보고서에서는 후속 질문을 이어갈 수 있습니다. **대화 지우기**는 현재 대화만 초기화합니다.
+8. **AI 키·대화 연결 해제**는 메모리의 키·연결 상태·대화·전송 동의를 모두 지웁니다.
+9. **분석 프롬프트 복사**는 같은 구조의 근거 중심 질문을 다른 AI 도구에서 재사용할 때 씁니다.
 
 <p align="center">
-  <a href="promo_video/public/screens/ai-question-panel.png"><img src="promo_video/public/screens/ai-question-panel.png" width="46%" alt="OpenAI API Key와 질문을 입력하는 AI HR 브리핑 패널" /></a>
-  <br><sub><b>화면 7.</b> OpenAI 키와 질문은 왼쪽 AI HR 브리핑 패널에 입력합니다. 키는 현재 대화에서만 사용됩니다.</sub>
+  <a href="docs/assets/ai-live-consent-disconnect.png"><img src="docs/assets/ai-live-consent-disconnect.png" width="46%" alt="OpenAI API Key, 전송 동의, 질문과 연결 해제가 포함된 AI HR 브리핑 패널" /></a>
+  <br><sub><b>화면 8.</b> 키와 질문을 입력하고 전송 범위를 확인해 동의합니다. 연결 해제는 키·대화·동의를 한 번에 지웁니다.</sub>
 </p>
 
 AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 못하면 차단된 원문은
 표시하지 않습니다. 대신 검증된 OpenDART 근거 요약을 보여 주므로 근거 ID와 원문을
 확인한 뒤 질문을 “확인된 수치만”, “인과가 아닌 가설로”처럼 좁혀 다시 요청합니다.
 
-### 7. 결과 저장과 공유
+### 8. 결과 저장과 공유
 
 - **CSV 내보내기**는 비교를 실행한 뒤 사용할 수 있으며 기준연도·보고서·기업·전체 지표를 UTF-8 BOM CSV로 저장합니다.
 - **프롬프트 복사**는 수치 자체가 아니라 현재 선택 조건과 근거 중심 분석 지시를 클립보드에 저장합니다.
 - 보고서에 인용할 때는 화면 캡처만 붙이지 말고 기준연도·보고서·기업 집합·DART 원문 링크·데이터 한계를 함께 기록합니다.
 
-### 8. 자주 발생하는 문제
+### 9. 자주 발생하는 문제
 
 | 증상 | 확인 및 해결 |
 | --- | --- |
@@ -190,12 +256,13 @@ AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 �
 
 ## 3분 빠른 시작
 
-1. OpenDART에서 발급받은 인증키를 `.env`의 `OPENDART_API_KEY`에 입력합니다.
-2. Windows에서는 저장소에 포함된 검증 실행 파일 `dist\\DARTStructure.exe`를,
+1. Windows에서는 저장소에 포함된 검증 실행 파일 `dist\\DARTStructure.exe`를,
    개발 환경에서는 `python server.py`를 실행합니다.
-3. 기업과 기준연도·보고서를 선택하고 **인력·보상 비교**를 누릅니다.
-4. **Strategy Brief**에서 결정 브리프·품질 게이트·원문 링크를 먼저 확인합니다.
-5. 추가 해석이 필요할 때만 왼쪽 `AI HR 브리핑`에 본인의 OpenAI API Key와 질문을 입력하고 **AI에게 질문하기**를 누릅니다.
+2. **합성 샘플로 시작**을 눌러 두 가상 기업, SAMPLE 배너와 외부 호출 0회 흐름을 확인합니다.
+3. 실데이터가 필요하면 OpenDART 인증키를 `.env`의 `OPENDART_API_KEY`에 입력하고 앱을 재시작합니다.
+4. 기업과 기준연도·보고서를 선택하고 **인력·보상 비교**를 누릅니다.
+5. **Strategy Brief**에서 결정 브리프·품질 게이트·원문 링크를 먼저 확인합니다.
+6. 추가 해석이 필요할 때만 본인의 OpenAI API Key와 질문을 입력하고 전송 동의 후 **AI에게 질문하기**를 누릅니다.
 
 > 실제 인증키가 들어 있는 `.env`는 Git에서 제외됩니다. OpenAI 키도 저장소나 `localStorage`에 저장하지 않습니다.
 
@@ -259,7 +326,7 @@ AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 �
 - 공시 누락·회계정책 차이·집계값의 한계를 구분하라는 해석 규칙
 
 화면 왼쪽의 **AI HR 브리핑** 카드에 사용자의 OpenAI API Key와 질문을 입력하고
-**AI에게 질문하기**를 누르면 OpenAI Responses API가 한국어 HR 브리핑을 생성합니다.
+전송 안내에 명시적으로 동의한 뒤 **AI에게 질문하기**를 누르면 OpenAI Responses API가 한국어 HR 브리핑을 생성합니다.
 키는 브라우저 저장소나 서버 설정에 저장하지 않고 AI 생성 요청의 헤더로만 전달됩니다.
 브라우저 탭을 새로 열거나 새로고침하면 키를 다시 입력해야 합니다. AI는 DART
 원자료를 대체하지 않으며 provider 오류를 성공 결과로 표시하지 않습니다.
@@ -314,7 +381,7 @@ HR 사용자가 readiness·confidence·선택 cohort·금지 용도를 해석하
 2. 사용자가 Vercel URL에 접속합니다.
 3. 기업명·종목코드·DART 고유번호로 기업을 검색하고, 기준연도와 보고서를 선택한 뒤 **인력·보상 비교**를 실행합니다.
 4. `Overview`, `People`, `Executives`, `Strategy Brief` 탭에서 재무·인력·임원구조 시각화를 확인합니다.
-5. 왼쪽 **AI HR 브리핑** 카드에 본인의 `OpenAI API Key`와 질문을 입력하고 **AI에게 질문하기**를 누릅니다.
+5. 왼쪽 **AI HR 브리핑** 카드에 본인의 `OpenAI API Key`와 질문을 입력하고 전송 안내에 동의한 뒤 **AI에게 질문하기**를 누릅니다.
 6. 첫 답변 뒤에 질문을 계속 입력하면 최근 대화와 같은 기업·연도의 DART 근거를 이어서 전달합니다.
 
 OpenDART 인증키는 Vercel 서버 환경변수에서 읽습니다. 사용자가 입력한 OpenAI 키는
@@ -330,20 +397,48 @@ AI 자동 해석만 제한됩니다.
 rate limit과 비용 한도를 별도로 적용해야 합니다. Strategy 탭 조회는 AI provider를 호출하지
 않으며, 유료 AI 호출은 사용자가 `AI에게 질문하기`를 명시적으로 누른 POST 요청에서만 발생합니다.
 
-배포 준비 파일인 `api/index.py`, `vercel.json`, `.python-version`이 포함되어
+한 HTTP 요청이 만드는 OpenDART fan-out은 기본 35초·실제 네트워크 시도 48회의 공유 예산을
+사용합니다. 개별 시도는 최대 10초이고 최초 호출 포함 최대 3회(재시도 최대 2회)이며, 캐시 hit는 시도 예산을 쓰지
+않습니다. 예산을 넘으면 완료된 기업·연도는 유지하고 나머지는 “범위를 줄이고 다시 시도”할 수
+있는 부분 결과로 반환합니다. 이 요청별 예산은 분산 일·월 비용 한도를 대체하지 않습니다.
+
+배포 준비 파일인 `api/index.py`, `vercel.json`, `.python-version`, `uv.lock`이 포함되어
 있습니다. GitHub 저장소를 Vercel 프로젝트에 연결한 뒤 `OPENDART_API_KEY`와
 `OPENAI_MODEL`을 서버 환경변수로 등록하면 동일한 앱을 배포할 수 있습니다.
-`OPENAI_API_KEY` 서버 환경변수는 자동화 호출용 선택 사항이며, 일반 사용자는
-AI HR 브리핑 카드에 자신의 키와 질문을 직접 입력합니다.
+일반 사용자는 AI HR 브리핑 카드에 자신의 키와 질문을 직접 입력합니다. 서버 소유
+`OPENAI_API_KEY`를 운영자 자동화에 사용할 때는 `DART_ALLOW_OPERATOR_AI_PROVIDER=true`와
+32자 이상의 `DART_OPERATOR_AI_TOKEN`을 함께 설정해야 하며, 자동화 요청도 일치하는
+`X-DART-Operator-Token` 헤더와 `provider_data_consent: true`를 보내야 합니다. 이 경계를
+설정하지 않은 익명 요청은 서버 소유 AI 키를 사용할 수 없습니다.
 
 운영 키는 `.env` 파일을 업로드하지 말고 Vercel의 암호화된 환경변수로 등록합니다.
 
 ```powershell
+python -X utf8 tools/repository_size_contract.py --root .
+python -X utf8 tools/release_secret_scan.py --root .
+# Windows EXE 릴리스도 함께 만들었다면 소스보다 새 빌드인지 검사
+python -X utf8 tools/release_preflight.py --root . --exe dist/DARTStructure.exe
 vercel env add OPENDART_API_KEY production --sensitive
 vercel deploy --prod
 ```
 
-`.vercelignore`는 `.env*`, PPT·보고서·영상·테스트·로컬 빌드 산출물을 제외합니다. 현재 배포에 필요한 소스는 23개 파일, 약 2.3MB이며 서버 함수 번들만 생성됩니다. 배포 후에는 운영 URL의 `/api/health`가 `api_key_configured: true`와 `strict_schema_enabled: true`를 반환하는지 확인합니다.
+첫 명령은 Git 추적 파일과 무시되지 않은 신규 파일을 함께 검사합니다. 단일 파일 50MiB,
+전체 후보 100MiB를 넘거나 `reports/*/`, `training_deck/`, `video_work/`, 가상환경·캐시·
+`node_modules` 같은 생성 디렉터리가 후보에 들어오면 실패합니다. 현재 로컬 `reports/`에는
+Windows·Vercel 격리 빌드가 누적되어 1GB를 넘을 수 있지만 `.gitignore`로 제외되며, `git add -f`
+또는 광범위한 강제 추가를 사용하지 않습니다. 최종 커밋 전에는 명시 경로만 stage한 뒤 이 용량
+계약과 비밀정보 검사를 다시 실행합니다.
+
+`.vercelignore`는 기본 차단 후 런타임과 잠금 재현에 필요한 파일만 허용하며, `vercel.json`의 함수 제외 규칙도 PPT·보고서·영상·테스트·로컬 빌드 산출물을 배포에서 차단합니다. 현재 working tree 기준 Vercel 후보는 23개·약 2.49MiB이고, 단일 후보는 2MiB·전체 후보는 6MiB를 넘지 않도록 계약 테스트가 막습니다. 저장소 정책상 `vercel deploy --prebuilt`는 금지합니다. 로컬 `.vercel/output`은 이전 코드·환경을 포함할 수 있는 캐시일 뿐 릴리스 입력이 아니므로, Vercel이 allowlist 소스와 `uv.lock`에서 새로 빌드하는 표준 배포만 사용합니다.
+
+배포 후에는 배포 대상 commit SHA를 전달해 root·health·합성 교실 계약, `api_key_configured: true`, 정확한 `build_id`를 자동 검증합니다. Vercel에서는 임의의 `DART_BUILD_ID`보다 `VERCEL_GIT_COMMIT_SHA`가 우선하므로, 다른 commit의 오래된 배포는 이 검사에서 통과하지 못합니다.
+
+```powershell
+python -m unittest -v test_deployment_artifact_contract
+python -X utf8 tools/post_deploy_smoke.py `
+  --base-url https://dart-ruby-zeta.vercel.app `
+  --expected-sha <배포한 Git commit SHA>
+```
 
 ## 데이터 범위
 
@@ -383,18 +478,21 @@ $env:OPENDART_API_KEY = "발급받은 OpenDART 인증키"
 Python 3.11 이상을 권장합니다.
 
 ```powershell
-python -m pip install -e ".[dev]"
+python -m pip install --upgrade "pip>=26.2.1,<27"
+python -m pip install "uv==0.11.2"
+uv sync --locked --extra dev
 Copy-Item .env.example .env
 # .env의 OPENDART_API_KEY에 OpenDART 인증키 입력
-python server.py
+uv run --locked --extra dev python server.py
 ```
 
-위 editable 설치가 개발·품질 의존성을 함께 준비합니다. CI 매트릭스도 같은 `.[dev]` 경로를 Python 3.11–3.14에서 검증하도록 구성했으며, Windows 배포 실행에는 별도 Python 설치가 필요하지 않습니다.
+위 명령은 `uv.lock`에 고정된 개발·품질 의존성을 준비합니다. CI 매트릭스도 같은 잠금파일을 Python 3.11–3.14에서 검증하며, 설치된 패키지 취약점 감사까지 통과해야 합니다. Windows 배포 실행에는 별도 Python 설치가 필요하지 않습니다.
 
 `.env`에는 OpenDART 키를 필수로 넣습니다. AI 브리핑 키는 실행 후 왼쪽 입력란에
-직접 넣는 방식이 기본이며, 자동화 호출이 필요한 경우에만 OpenAI 키를 환경변수로
-선택적으로 추가할 수 있습니다. 별도 Claude MCP gateway가 있는 환경에서는 기존
-gateway 설정을 대체 경로로 사용할 수 있습니다.
+직접 넣는 방식이 기본입니다. 자동화 호출에서 서버 소유 OpenAI 키를 쓰려면
+`DART_ALLOW_OPERATOR_AI_PROVIDER`, `DART_OPERATOR_AI_TOKEN`과 요청 헤더를 함께 구성해야
+합니다. 별도 Claude MCP gateway가 있는 환경에서는 기존 gateway 설정을 대체 경로로
+사용할 수 있습니다.
 
 ```text
 OPENDART_API_KEY=
@@ -425,12 +523,12 @@ GET `/api/financials`, `/api/people`, `/api/people/history`, `/api/workforce/orc
 쉼표로 구분한 `corp_codes` 쿼리 문자열을 받고, POST `/api/analysis`,
 `/api/analysis/context`는 JSON 배열 또는 문자열 `corp_codes`를 받습니다.
 
-AI HR 브리핑 카드에 OpenAI 키를 입력하면 AI 분석 질문과 Strategy Brief에서 OpenDART
+AI HR 브리핑 카드에 OpenAI 키를 입력하고 전송 안내에 동의하면 AI 분석 질문과 Strategy Brief에서 OpenDART
 수치와 출처만을 근거로 한국어 HR 브리핑을 생성합니다. 사용자가 입력한 키는
 서버 응답, 로그, 저장소, `localStorage`에 포함하지 않습니다.
-`OPENAI_MODEL`은 계정에서 사용할 수 있는 Responses API 모델로 바꿀 수
-있습니다. OpenAI 키가 없으면 기존 Claude MCP gateway를 확인하고, 둘 다
-없으면 근거 기반 분석 프롬프트만 반환합니다.
+`OPENAI_MODEL`은 계정에서 사용할 수 있는 Responses API 모델로 바꿀 수 있습니다.
+사용자 키가 없고 승인된 운영자 토큰도 없으면 서버 소유 OpenAI 키는 사용하지 않으며,
+근거 기반 비교·Strategy Brief·프롬프트 복사는 계속 사용할 수 있습니다.
 
 AI 브리핑의 항목과 판단 원칙은 [`HR_BRIEFING_RULES.md`](HR_BRIEFING_RULES.md)에
 분리되어 있습니다. 교육 실습에서는 이 파일을 수정해 브리핑 구조와 추가
@@ -446,16 +544,19 @@ AI 브리핑의 항목과 판단 원칙은 [`HR_BRIEFING_RULES.md`](HR_BRIEFING_
 python -m unittest discover -v
 python -m coverage run -m unittest discover
 python -m coverage report -m
-python -m ruff check .
-python -m compileall -q .
+python -m ruff check . --select E4,E7,E9,F
+python -m py_compile analysis_contract.py server.py agent_orchestration.py classroom_mode.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestration_evaluation.py orchestrator.py runtime_controls.py tools/benchmark_orchestration.py tools/artifact_manifest.py tools/classroom_preflight.py tools/post_deploy_smoke.py tools/release_preflight.py tools/release_secret_scan.py tools/repository_size_contract.py tools/vercel_bundle_contract.py
 node --check static/app.js
+node --check tools/qa_classroom_mode.js
+node --check tools/qa_failure_recovery.js
 node --check tools/qa_orchestration_v2.js
 python tools/benchmark_orchestration.py --iterations 100 --warmups 5
 ```
 
-현재 Python 3.12 기준 회귀 306개, 제품 모듈 branch coverage 84%, 핵심 v2 DAG 92%를
+현재 Python 3.12 전체 451건 회귀와 제품 모듈 branch coverage 86%, 핵심 v2 DAG 93%를
 기준으로 관리합니다. `jsonschema`는 핵심 런타임 의존성이며 소스·패키지 모두 strict schema를
-기본으로 검증합니다. 지원 Python 버전별 CI도 같은 306개 계약을 실행해야 합니다.
+기본으로 검증합니다. 지원 Python 버전별 CI도 같은 전체 계약을 실행해야 합니다. 테스트 개수는
+구현에 따라 달라질 수 있으므로 성공 여부는 명령의 종료 코드와 실패 내역으로 판단합니다.
 격리 PyInstaller smoke에서는 `tools/packaged_runtime_smoke.py`로 strict schema를 켠 실제 OpenDART schema v2 응답과 evidence 41/41건 원문 연결을
 확인했고, headless Edge에서는 공식 citation 링크와 unsafe URL 비링크를 비롯해 원자적 비교 커밋,
 기간 변경 시 AI 취소, 숫자 경계, CSV 수식 주입 방어를 검증했습니다.
@@ -494,6 +595,12 @@ python -m http.server --directory docs 8000
 ## 문서
 
 - [`OpenDART_HR_Analytics_4시간_커리큘럼.md`](OpenDART_HR_Analytics_4시간_커리큘럼.md) — 2026년 9월 30일 WEEK 2, 4시간 실습형 강의 구성
+- [`docs/PARTICIPANT_PREFLIGHT.md`](docs/PARTICIPANT_PREFLIGHT.md) — 참가자 계정·환경·보안 사전점검과 복구 방법
+- [`docs/INSTRUCTOR_RUNBOOK.md`](docs/INSTRUCTOR_RUNBOOK.md) — m0~m4 체크포인트, 4시간 타임박스, 장애 대응과 최소 루브릭
+- [`docs/COURSE_REHEARSAL_CHECKLIST.md`](docs/COURSE_REHEARSAL_CHECKLIST.md) — 역할 분담, 80% 전환 규칙, 화면별 진단·복구와 리허설 증거
+- [`docs/PPT_ALIGNMENT_PLAN.md`](docs/PPT_ALIGNMENT_PLAN.md) — 본문 42장·부록 18장 강의 슬라이드와 실제 화면 캡처 정렬표
+- [`docs/PRODUCTION_RELEASE_CHECKLIST.md`](docs/PRODUCTION_RELEASE_CHECKLIST.md) — 운영 URL의 build ID·보안 헤더·합성 교실·AI 경계 배포 승인 기준
+- [`CLAUDE.md`](CLAUDE.md) — Claude Code용 개발·검증·개인정보·근거 가드레일
 - [`DART_WORKFORCE_INTELLIGENCE_PLAN.md`](DART_WORKFORCE_INTELLIGENCE_PLAN.md) — 제품 범위·데이터 계약·완료 기준
 - [`DART_WORKFORCE_INTELLIGENCE_RUNBOOK.md`](DART_WORKFORCE_INTELLIGENCE_RUNBOOK.md) — 실행·시각 QA·AI gateway 점검 절차
 - [`docs/HR_DECISION_SUPPORT.md`](docs/HR_DECISION_SUPPORT.md) — readiness·confidence·대표 지표·AI 전달 경계

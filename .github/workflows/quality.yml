@@ -3,6 +3,15 @@ name: quality
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Production or preview base URL to verify
+        required: true
+        default: https://dart-ruby-zeta.vercel.app
+      expected_sha:
+        description: Full Git commit SHA expected in /api/health
+        required: true
 
 permissions:
   contents: read
@@ -11,61 +20,118 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: actions/setup-node@v4
+      - name: Upgrade pip to audited release line
+        run: python -m pip install --upgrade "pip>=26.2.1,<27"
+      - name: Install pinned uv
+        run: python -m pip install "uv==0.11.2"
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
-      - name: Install project and quality tools
-        run: python -m pip install -e ".[dev]"
+          node-version: "24"
+          package-manager-cache: false
+      - name: Sync locked project and quality tools
+        run: uv sync --locked --extra dev --python "${{ matrix.python-version }}"
+      - name: Verify matrix interpreter was not replaced by .python-version
+        run: >-
+          uv run --locked --extra dev python -c
+          "import sys; expected='${{ matrix.python-version }}';
+          assert sys.version_info[:2] == tuple(map(int, expected.split('.'))),
+          (expected, sys.version)"
       - name: Unit and contract tests
-        run: python -m coverage run -m unittest discover -v
+        run: uv run --locked --extra dev python -m coverage run -m unittest discover -v
       - name: Coverage summary
-        run: python -m coverage report -m --fail-under=80
+        run: uv run --locked --extra dev python -m coverage report -m --fail-under=80
       - name: Python lint
-        run: ruff check .
+        run: uv run --locked --extra dev ruff check . --select E4,E7,E9,F
+      - name: Installed dependency vulnerability audit
+        run: uv run --locked --extra dev python -m pip_audit --local
+      - name: Release secret scan
+        run: uv run --locked --extra dev python -X utf8 tools/release_secret_scan.py --root .
+      - name: Repository size and generated-artifact contract
+        run: uv run --locked --extra dev python -X utf8 tools/repository_size_contract.py --root .
       - name: Python compile check
-        run: python -m py_compile analysis_contract.py server.py agent_orchestration.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestration_evaluation.py orchestrator.py runtime_controls.py tools/benchmark_orchestration.py tools/artifact_manifest.py
+        run: uv run --locked --extra dev python -m py_compile analysis_contract.py server.py agent_orchestration.py classroom_mode.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestration_evaluation.py orchestrator.py runtime_controls.py tools/benchmark_orchestration.py tools/artifact_manifest.py tools/classroom_preflight.py tools/post_deploy_smoke.py tools/release_preflight.py tools/release_secret_scan.py tools/repository_size_contract.py tools/vercel_bundle_contract.py
       - name: Frontend syntax check
         run: |
           node --check static/app.js
+          node --check tools/qa_classroom_mode.js
+          node --check tools/qa_failure_recovery.js
           node --check tools/qa_orchestration_v2.js
       - name: Deterministic orchestration budget
-        run: python tools/benchmark_orchestration.py --iterations 25 --warmups 2 --max-p95-ms 250
+        run: uv run --locked --extra dev python tools/benchmark_orchestration.py --iterations 25 --warmups 2 --max-p95-ms 250
 
   package-smoke:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Install project and frozen build tools
-        run: python -m pip install -e ".[build]"
+      - name: Upgrade pip to audited release line
+        run: python -m pip install --upgrade "pip>=26.2.1,<27"
+      - name: Install pinned uv
+        run: python -m pip install "uv==0.11.2"
+      - name: Sync locked project and frozen build tools
+        run: uv sync --locked --extra build --python "3.12"
       - name: Build isolated Windows executable
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean `
+          uv run --locked --extra build python -m PyInstaller --noconfirm --clean `
             --distpath reports/ci-build/dist `
             --workpath reports/ci-build/work `
             DARTStructure.spec
+      - name: Bind executable to source commit and release inputs
+        shell: pwsh
+        run: |
+          uv run --locked --extra build python tools/release_preflight.py `
+            --root . `
+            --exe reports/ci-build/dist/DARTStructure.exe `
+            --commit-sha $env:GITHUB_SHA `
+            --manifest-output reports/ci-build/dist/DARTStructure.release.json
+      - name: Release secret scan built executable
+        shell: pwsh
+        run: |
+          uv run --locked --extra build python -X utf8 tools/release_secret_scan.py `
+            --root . `
+            --binary reports/ci-build/dist/DARTStructure.exe
       - name: Smoke packaged health and static assets
         shell: pwsh
         run: |
-          python tools/packaged_runtime_smoke.py `
+          uv run --locked --extra build python tools/packaged_runtime_smoke.py `
             --exe reports/ci-build/dist/DARTStructure.exe `
             --working-directory $env:RUNNER_TEMP `
             --port 8776 `
             --strict-schema `
             --health-only
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: DARTStructure-windows
-          path: reports/ci-build/dist/DARTStructure.exe
+          name: DARTStructure-windows-${{ github.sha }}
+          path: |
+            reports/ci-build/dist/DARTStructure.exe
+            reports/ci-build/dist/DARTStructure.release.json
+
+  post-deploy-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Verify deployed immutable revision and classroom contract
+        env:
+          RELEASE_BASE_URL: ${{ inputs.base_url }}
+          RELEASE_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: >-
+          python -X utf8 tools/post_deploy_smoke.py
+          --base-url "$RELEASE_BASE_URL"
+          --expected-sha "$RELEASE_EXPECTED_SHA"

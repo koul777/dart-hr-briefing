@@ -38,6 +38,23 @@ SENSITIVE_KEYS = {
     "main_career",
     "career",
     "resident_registration_number",
+    "email",
+    "email_address",
+    "phone",
+    "phone_number",
+    "employee_id",
+    "staff_id",
+    "worker_id",
+    "worker_identifier",
+    "personnel_id",
+    "personnel_number",
+    "api_key",
+    "crtfc_key",
+    "operator_token",
+    "access_token",
+    "auth_token",
+    "credential",
+    "password",
     "성명",
     "생년월일",
     "주민등록번호",
@@ -315,22 +332,325 @@ def _redact_credential_text(
     preserve_newlines: bool = False,
 ) -> str:
     rendered = _safe_text(value, max_length, preserve_newlines=preserve_newlines)
+    rendered = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff]", "", rendered)
     rendered = re.sub(r"\bsk-[A-Za-z0-9_-]{4,}", "[REDACTED]", rendered)
     rendered = re.sub(
         r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{4,}",
         "Bearer [REDACTED]",
         rendered,
     )
-    return re.sub(
-        r"(?i)\b(crtfc_key|api[_-]?key|token)(\s*[:=]\s*)(['\"]?)[^\s,;&'\"]+",
-        r"\1\2\3[REDACTED]",
+    rendered = re.sub(
+        r"(?i)\bbasic\s+[A-Za-z0-9._~+/=-]{4,}",
+        "Basic [REDACTED]",
         rendered,
-    )[:max_length]
+    )
+    rendered = re.sub(
+        r"(?i)\b((?:(?:openai|opendart|anthropic|claude|dart|vercel|github|gh|mcp)"
+        r"[\s_-]*)*(?:crtfc[\s_-]*key|api[\s_-]*key|token|credential)|"
+        r"(?:openai|opendart|anthropic|claude|dart|vercel|github|gh|mcp)"
+        r"[\s_-]*key|authorization|secret)(\s*['\"]?)"
+        r"(\s*[:=]\s*)(['\"]?)[^\s,;&'\"]+",
+        r"\1\2\3\4[REDACTED]",
+        rendered,
+    )
+    rendered = re.sub(
+        r"(?i)\b((?:operator|access|auth|bearer)[\s_-]*token)"
+        r"(\s*['\"]?)(\s*[:=]\s*)(['\"]?)[^\s,;&'\"]+",
+        r"\1\2\3\4[REDACTED]",
+        rendered,
+    )
+    rendered = re.sub(
+        r"(?<![A-Za-z0-9._~-])[A-Za-z0-9._~-]{32,512}"
+        r"(?![A-Za-z0-9._~-])",
+        "[REDACTED]",
+        rendered,
+    )
+    return rendered[:max_length]
+
+
+EMAIL_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9._%+\-\u0080-\uffff])"
+    r"[A-Za-z0-9._%+\-\u0080-\uffff]{1,64}@"
+    r"(?:(?:[A-Za-z0-9\u0080-\uffff]"
+    r"(?:[A-Za-z0-9\u0080-\uffff-]{0,61}[A-Za-z0-9\u0080-\uffff])?\.)+"
+    r"(?:[A-Za-z]{2,24}|xn--[A-Za-z0-9-]{2,59}|[\u0080-\uffff]{2,24})|"
+    r"\[(?:\d{1,3}\.){3}\d{1,3}\])"
+    r"(?![A-Za-z0-9._%+\-\u0080-\uffff])"
+)
+KOREAN_PHONE_PATTERN = re.compile(
+    r"(?<!\d)(?:(?:\+?82[-./\s]?)?0|\+?82[-./\s]?)"
+    r"(?:1[016789]|2|70|[3-6][1-5])"
+    r"[-./\s]?\d{3,4}[-./\s]?\d{4}(?!\d)"
+)
+INTERNATIONAL_PHONE_PATTERN = re.compile(
+    r"(?<!\d)\+(?=(?:\D*\d){8,15}(?!\d))"
+    r"[1-9]\d{0,2}(?:[-./\s]?\(?\d{1,4}\)?){2,5}[-./\s]?\d{2,4}(?!\d)"
+)
+INTERNATIONAL_DIAL_PHONE_PATTERN = re.compile(
+    r"(?<!\d)00(?=(?:\D*\d){8,15}(?!\d))"
+    r"[1-9]\d{0,2}(?:[-./\s]?\(?\d{1,4}\)?){2,5}[-./\s]?\d{2,4}(?!\d)"
+)
+GENERIC_GROUPED_PHONE_PATTERN = re.compile(
+    r"(?<!\d)(?:(?:\(\d{2,4}\)|\d{2,4})[-./\s]\d{3,4}[-./\s]\d{4}|"
+    r"(?:\d{2,4}[-./\s]){2}\d{4})(?!\d)"
+)
+LABELED_PHONE_PATTERN = re.compile(
+    r"(?i)(\b(?:phone|mobile|telephone|tel)(?:[_\s-]*(?:no|number))?\b|"
+    r"(?:전화|휴대폰|연락처)(?:\s*번호)?)\s*['\"]?"
+    r"(\s*[:#=\-]?\s*)(?:\+|00)?[\d()./\-\s]{8,24}"
+)
+KOREAN_RRN_PATTERN = re.compile(r"(?<!\d)\d{6}[-\s]?\d{7}(?!\d)")
+KOREAN_DELIMITED_RRN_PATTERN = re.compile(r"(?<!\d)\d{6}[-\s]\d{7}(?!\d)")
+EMPLOYEE_ID_PATTERN = re.compile(
+    r"(?i)(\b(?:employee|staff|worker|personnel)[_\s-]*"
+    r"(?:id|identifier|no|number)\b|"
+    r"(?:사\s*번|사\s*원\s*번\s*호|직원\s*번호|인사\s*번호))"
+    r"\s*['\"]?(\s*[:#=\-]?\s*)['\"]?[A-Za-z0-9_-]{2,32}"
+)
+EMPLOYEE_TOKEN_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9])EMP[-_][A-Za-z0-9_-]{2,32}(?![A-Za-z0-9])"
+)
+PERSONNEL_CONTEXT_PATTERN = re.compile(
+    r"(?:채용|선발|승진|평가|보상|급여|배치|전보|감축|해고|퇴출|교체|"
+    r"계약\s*해지|성과|역량|능력|유능|무능|부적합|적합성|"
+    r"hir(?:e|ing)|recruit|promot|evaluat|performance|compensat|salary|pay|"
+    r"transfer|layoff|dismiss|terminat|fire|incompetent|competent)",
+    flags=re.IGNORECASE,
+)
+KOREAN_PERSON_NAME_PATTERN = re.compile(
+    r"(?<![가-힣])([김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심"
+    r"노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기"
+    r"반라왕금옥육인맹제모탁국어은편용][가-힣]{2,3})"
+    r"(?=(?:씨|님|사원|직원|후보자|임원|대표이사|의|은|는|이|가|을|를|에게|께서))"
+)
+KOREAN_PERSON_WITH_ROLE_PATTERN = re.compile(
+    r"(?<![가-힣])([김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심"
+    r"노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기"
+    r"반라왕금옥육인맹제모탁국어은편용][가-힣]{2,3})"
+    r"(?=\s*(?:씨|님|사번|사원|직원|후보자|임원|대표이사))"
+)
+KOREAN_STANDALONE_PERSON_NAME_PATTERN = re.compile(
+    r"(?<![가-힣])([김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심"
+    r"노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기"
+    r"반라왕금옥육인맹제모탁국어은편용][가-힣]{2})(?![가-힣])"
+)
+KOREAN_TWO_SYLLABLE_JUDGMENT_NAME_PATTERN = re.compile(
+    r"(?<![가-힣])([김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심"
+    r"노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기"
+    r"반라왕금옥육인맹제모탁국어은편용][가-힣])"
+    r"(?=(?:은|는|이|가)\s*(?:유능|무능|우수|부족|부적합|적합|탁월|성과|역량))"
+)
+KOREAN_SHORT_PERSON_NAME_PATTERN = re.compile(
+    r"(?<![가-힣])([김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심"
+    r"노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기"
+    r"반라왕금옥육인맹제모탁국어은편용][가-힣])"
+    r"(?=\s*(?:씨|님|사번|사원|직원|후보자|임원|대표이사|"
+    r"(?:의\s*)?(?:채용|선발|승진|평가|보상|배치|전보|감축|해고|퇴출)))"
+)
+KOREAN_COMPOUND_SURNAME_PATTERN = re.compile(
+    r"(?<![가-힣])((?:남궁|황보|제갈|선우|사공|서문|독고|동방)[가-힣]{1,2})"
+    r"(?=\s*(?:씨|님|사번|사원|직원|후보자|임원|대표이사|"
+    r"(?:의\s*)?(?:채용|선발|승진|평가|보상|배치|전보|감축|해고|퇴출)))"
+)
+ENGLISH_PERSON_NAME_PATTERN = re.compile(
+    r"(?<![A-Za-z])([A-Z][a-z]{1,30}\s+[A-Z][a-z]{1,30})(?![A-Za-z])"
+)
+ENGLISH_INITIAL_PERSON_NAME_PATTERN = re.compile(
+    r"(?<![A-Za-z])([A-Za-z]\.?\s+[A-Za-z][a-z]{1,30})"
+    r"(?=\s*(?:'s\s*)?(?:"
+    r"(?:is|was)\s+(?:an?\s+|the\s+)?"
+    r"(?:employee|worker|candidate|manager|executive|director|contact)\b|"
+    r"(?:employee|worker|candidate|manager|executive|director|contact|"
+    r"hir\w*|recruit\w*|promot\w*|evaluat\w*|compensat\w*|"
+    r"transfer\w*|dismiss\w*|terminat\w*|fired?\b)|"
+    r"(?:should|must|may)\s+(?:be\s+)?"
+    r"(?:hired?|recruited?|promoted?|evaluated?|transferred?|"
+    r"dismissed?|terminated?|fired?)\b))",
+    flags=re.IGNORECASE,
+)
+ENGLISH_LABELED_LOWERCASE_PERSON_NAME_PATTERN = re.compile(
+    r"(?<![A-Za-z])(?:employee|worker|candidate|manager|executive|director|"
+    r"contact|name)\s*(?:['\"]?\s*[:=\-]\s*['\"]?\s*|"
+    r"(?=[a-z]{2,30}\s+[a-z]{2,30}(?:'s\b|\s+(?:is|was|should|must|"
+    r"hir\w*|recruit\w*|promot\w*|evaluat\w*|compensat\w*|transfer\w*|"
+    r"dismiss\w*|terminat\w*|fir\w*))))"
+    r"(?!(?:cannot|should|must|will|may|might|could|is|was|has|have|not)\b)"
+    r"([a-z]{2,30}\s+[a-z]{2,30})(?![A-Za-z])",
+    flags=re.IGNORECASE,
+)
+ENGLISH_CONTEXTUAL_LOWERCASE_PERSON_NAME_PATTERN = re.compile(
+    r"(?<![A-Za-z])(?!(?:no|this|that|the|each|every|any)\s+"
+    r"(?:employee|worker|candidate|applicant|manager|executive|director)\b)"
+    r"([a-z]{2,30}\s+[a-z]{2,30})"
+    r"(?=\s*(?:'s\s+(?:performance|competenc|capab|evaluat)|"
+    r"(?:should|must)\s+(?:be\s+)?"
+    r"(?:hir|recruit|promot|transfer|dismiss|terminat|fir)))",
+    flags=re.IGNORECASE,
+)
+PERSON_REFERENCE_CONTEXT_PATTERN = re.compile(
+    r"(?:직원|사원|후보자|담당자|연락처|임원|대표이사|성과|역량|"
+    r"\b(?:employee|worker|candidate|contact|manager|executive|director|ceo|"
+    r"performance|competenc\w*|capab\w*)\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def _redact_direct_identifier_text(
+    value: Any,
+    max_length: int,
+    *,
+    preserve_newlines: bool = False,
+    redact_names: bool = False,
+) -> str:
+    rendered = _redact_credential_text(
+        value,
+        max_length,
+        preserve_newlines=preserve_newlines,
+    )
+    rendered = KOREAN_RRN_PATTERN.sub("[REDACTED_RRN]", rendered)
+    rendered = EMAIL_PATTERN.sub("[REDACTED_EMAIL]", rendered)
+    rendered = INTERNATIONAL_PHONE_PATTERN.sub("[REDACTED_PHONE]", rendered)
+    rendered = INTERNATIONAL_DIAL_PHONE_PATTERN.sub("[REDACTED_PHONE]", rendered)
+    rendered = KOREAN_PHONE_PATTERN.sub("[REDACTED_PHONE]", rendered)
+    rendered = GENERIC_GROUPED_PHONE_PATTERN.sub("[REDACTED_PHONE]", rendered)
+    rendered = LABELED_PHONE_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED_PHONE]",
+        rendered,
+    )
+    rendered = EMPLOYEE_ID_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED_EMPLOYEE_ID]",
+        rendered,
+    )
+    rendered = EMPLOYEE_TOKEN_PATTERN.sub("[REDACTED_EMPLOYEE_ID]", rendered)
+    if redact_names:
+        rendered = KOREAN_PERSON_NAME_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = KOREAN_PERSON_WITH_ROLE_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = KOREAN_STANDALONE_PERSON_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = KOREAN_SHORT_PERSON_NAME_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = KOREAN_TWO_SYLLABLE_JUDGMENT_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = KOREAN_COMPOUND_SURNAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = ENGLISH_PERSON_NAME_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = ENGLISH_INITIAL_PERSON_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = ENGLISH_LABELED_LOWERCASE_PERSON_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = ENGLISH_CONTEXTUAL_LOWERCASE_PERSON_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+    return rendered[:max_length]
+
+
+def _redact_personal_question_text(value: Any, max_length: int) -> str:
+    """Remove common direct identifiers before a question can reach a provider."""
+
+    def sanitize_structure(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            sanitized: dict[str, Any] = {}
+            for key, child in item.items():
+                key_text = str(key)
+                key_token = _key_token(key_text)
+                if _is_credential_key(key_text):
+                    sanitized[key_text] = "[REDACTED]"
+                elif key_token in {
+                    "employeeid",
+                    "employeeidentifier",
+                    "staffid",
+                    "staffidentifier",
+                    "workerid",
+                    "workeridentifier",
+                    "personnelid",
+                    "personnelnumber",
+                    "사번",
+                    "사원번호",
+                    "직원번호",
+                    "인사번호",
+                }:
+                    sanitized[key_text] = "[REDACTED_EMPLOYEE_ID]"
+                elif key_token in {
+                    "phone",
+                    "phonenumber",
+                    "mobile",
+                    "telephone",
+                    "tel",
+                    "contactnumber",
+                    "전화",
+                    "전화번호",
+                    "연락처",
+                    "휴대폰",
+                }:
+                    sanitized[key_text] = "[REDACTED_PHONE]"
+                elif key_token in {"email", "emailaddress", "이메일"}:
+                    sanitized[key_text] = "[REDACTED_EMAIL]"
+                elif key_token in {"name", "nm", "성명"}:
+                    sanitized[key_text] = "[REDACTED_PERSON]"
+                elif key_token in {"residentregistrationnumber", "주민등록번호"}:
+                    sanitized[key_text] = "[REDACTED_RRN]"
+                else:
+                    sanitized[key_text] = sanitize_structure(child)
+            return sanitized
+        if isinstance(item, (list, tuple)):
+            return [sanitize_structure(child) for child in item]
+        return item
+
+    rendered_value = (
+        _canonical_json(sanitize_structure(value))
+        if isinstance(value, (Mapping, list, tuple))
+        else value
+    )
+    rendered = _redact_direct_identifier_text(
+        rendered_value,
+        max_length,
+        preserve_newlines=True,
+    )
+    if PERSONNEL_CONTEXT_PATTERN.search(rendered):
+        rendered = KOREAN_PERSON_NAME_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = KOREAN_PERSON_WITH_ROLE_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = KOREAN_SHORT_PERSON_NAME_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = KOREAN_TWO_SYLLABLE_JUDGMENT_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = KOREAN_COMPOUND_SURNAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = ENGLISH_PERSON_NAME_PATTERN.sub("[REDACTED_PERSON]", rendered)
+        rendered = ENGLISH_INITIAL_PERSON_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = ENGLISH_LABELED_LOWERCASE_PERSON_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+        rendered = ENGLISH_CONTEXTUAL_LOWERCASE_PERSON_NAME_PATTERN.sub(
+            "[REDACTED_PERSON]",
+            rendered,
+        )
+    return rendered[:max_length]
 
 
 def _public_error(value: Any) -> dict[str, Any]:
     def public_text(text: Any) -> str:
-        return _redact_credential_text(text, 1000)
+        return _redact_direct_identifier_text(
+            text,
+            1000,
+            redact_names=True,
+        )
 
     if not isinstance(value, Mapping):
         return {"message": public_text(value)}
@@ -341,13 +661,31 @@ def _public_error(value: Any) -> dict[str, Any]:
     }
 
 
+SAFE_PUBLIC_EXCEPTION_TYPES = {
+    "ConnectionError",
+    "OSError",
+    "RuntimeError",
+    "TimeoutError",
+    "TypeError",
+    "ValueError",
+}
+
+
+def _public_exception_type(value: BaseException) -> str:
+    exception_type = type(value)
+    if (
+        exception_type.__module__ == "builtins"
+        and exception_type.__name__ in SAFE_PUBLIC_EXCEPTION_TYPES
+    ):
+        return exception_type.__name__
+    return "Error"
+
+
 def _safe_request_context(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if not value:
         return {}
     context: dict[str, Any] = {}
-    question = _redact_credential_text(
-        value.get("question"), 4000, preserve_newlines=True
-    )
+    question = _redact_personal_question_text(value.get("question"), 4000)
     if question:
         context["question"] = question[:4000]
     view = str(value.get("view") or "").strip()
@@ -1094,16 +1432,154 @@ def _contains_sensitive_key(value: Any) -> bool:
     return False
 
 
+def _is_credential_key(value: Any) -> bool:
+    token = _key_token(value)
+    return (
+        token in {
+            "token",
+            "crtfckey",
+            "bearer",
+            "authorization",
+            "credential",
+            "password",
+            "secret",
+        }
+        or "apikey" in token
+        or token in {
+            "openaikey",
+            "opendartkey",
+            "anthropickey",
+            "claudekey",
+            "dartkey",
+            "vercelkey",
+            "githubkey",
+            "mcpkey",
+        }
+        or token.endswith("token")
+    )
+
+
 def _contains_credential_literal(value: Any) -> bool:
     if isinstance(value, str):
         return _redact_credential_text(value, len(value), preserve_newlines=True) != value
     if isinstance(value, Mapping):
         return any(
-            _contains_credential_literal(key) or _contains_credential_literal(child)
+            (
+                _is_credential_key(key)
+                and child not in (None, "", False)
+            )
+            or _contains_credential_literal(key)
+            or _contains_credential_literal(child)
             for key, child in value.items()
         )
     if isinstance(value, (list, tuple)):
         return any(_contains_credential_literal(child) for child in value)
+    return False
+
+
+EXPLICIT_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)(?:\bsk-[A-Za-z0-9_-]{4,}|\b(?:bearer|basic)\s+"
+    r"[A-Za-z0-9._~+/=-]{4,}|"
+    r"\b(?:(?:(?:openai|opendart|anthropic|claude|dart|vercel|github|gh|mcp)"
+    r"[\s_-]*)*(?:crtfc[\s_-]*key|api[\s_-]*key|token|credential)|"
+    r"(?:openai|opendart|anthropic|claude|dart|vercel|github|gh|mcp)"
+    r"[\s_-]*key|authorization|secret|"
+    r"(?:operator|access|auth|bearer)[\s_-]*token)\s*['\"]?\s*[:=]\s*['\"]?"
+    r"[^\s,;&'\"]+)"
+)
+
+
+def _contains_explicit_credential_literal(value: Any) -> bool:
+    if isinstance(value, str):
+        normalized = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff]", "", value)
+        return bool(EXPLICIT_CREDENTIAL_PATTERN.search(normalized))
+    if isinstance(value, Mapping):
+        return any(
+            (_is_credential_key(key) and child not in (None, "", False))
+            or _contains_explicit_credential_literal(key)
+            or _contains_explicit_credential_literal(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_explicit_credential_literal(child) for child in value)
+    return False
+
+
+def _contains_direct_identifier_literal(value: Any) -> bool:
+    if isinstance(value, str):
+        return (
+            _redact_direct_identifier_text(
+                value,
+                len(value),
+                preserve_newlines=True,
+            )
+            != value
+        )
+    if isinstance(value, Mapping):
+        return any(
+            (_is_sensitive_key(key) and child not in (None, "", False))
+            or _contains_direct_identifier_literal(key)
+            or _contains_direct_identifier_literal(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_direct_identifier_literal(child) for child in value)
+    return False
+
+
+def _contains_direct_personal_identifier_literal(value: Any) -> bool:
+    if isinstance(value, str):
+        return any(pattern.search(value) for pattern in (
+            EMAIL_PATTERN,
+            INTERNATIONAL_PHONE_PATTERN,
+            INTERNATIONAL_DIAL_PHONE_PATTERN,
+            KOREAN_PHONE_PATTERN,
+            GENERIC_GROUPED_PHONE_PATTERN,
+            LABELED_PHONE_PATTERN,
+            KOREAN_RRN_PATTERN,
+            EMPLOYEE_ID_PATTERN,
+            EMPLOYEE_TOKEN_PATTERN,
+        ))
+    if isinstance(value, Mapping):
+        return any(
+            (_is_sensitive_key(key) and child not in (None, "", False))
+            or _contains_direct_personal_identifier_literal(key)
+            or _contains_direct_personal_identifier_literal(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _contains_direct_personal_identifier_literal(child) for child in value
+        )
+    return False
+
+
+def _contains_prompt_personal_identifier_literal(value: Any) -> bool:
+    """Detect identifiers in evidence prompts without treating 13-digit metrics as RRNs."""
+
+    if isinstance(value, str):
+        return any(pattern.search(value) for pattern in (
+            EMAIL_PATTERN,
+            INTERNATIONAL_PHONE_PATTERN,
+            INTERNATIONAL_DIAL_PHONE_PATTERN,
+            KOREAN_PHONE_PATTERN,
+            GENERIC_GROUPED_PHONE_PATTERN,
+            LABELED_PHONE_PATTERN,
+            KOREAN_DELIMITED_RRN_PATTERN,
+            EMPLOYEE_ID_PATTERN,
+            EMPLOYEE_TOKEN_PATTERN,
+        ))
+    if isinstance(value, Mapping):
+        return any(
+            (_is_sensitive_key(key) and child not in (None, "", False))
+            or _contains_prompt_personal_identifier_literal(key)
+            or _contains_prompt_personal_identifier_literal(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _contains_prompt_personal_identifier_literal(child) for child in value
+        )
     return False
 
 
@@ -1992,6 +2468,10 @@ GENERIC_PERSON_LIKE_TERMS = {
     "경영진",
     "이사회",
     "최근",
+    "성과",
+    "count is",
+    "count was",
+    "counts are",
 }
 KOREAN_PERSON_REFERENCE_PARTICLES = (
     "으로",
@@ -2133,11 +2613,13 @@ def _possible_fabricated_person_reference(
 
 
 CAUSAL_MARKER_PATTERN = re.compile(
-    r"(?:때문(?:에|이다|입니다)|(?:으)?로\s*인해|원인(?:이다|입니다|으로)|"
+    r"(?:때문(?:에|이다|입니다)|탓(?:이다|입니다|으로)|(?:으)?로\s*인해|"
+    r"영향으로|원인(?:이다|입니다|으로)|"
     r"기인(?:했다|합니다|한)|초래(?:했다|합니다|한)|유발(?:했다|합니다|한)|"
     r"야기(?:했다|합니다|한)|견인(?:했다|합니다|한)|저해(?:했다|합니다|한)|"
     r"촉진(?:했다|합니다|한)|영향을\s*미쳤|결과(?:이다|입니다|로)|"
-    r"because|caused\s+by|caused|driven\s+by|led\s+to|resulted\s+in|due\s+to)",
+    r"because|caused\s+by|caused|driven\s+by|led\s+to|resulted\s+in|due\s+to|"
+    r"attribut(?:able|ed)\s+to|therefore|thus)",
     flags=re.IGNORECASE,
 )
 CAUSAL_HEDGE_TERMS = (
@@ -2161,6 +2643,7 @@ CAUSAL_HEDGE_TERMS = (
     "could ",
     "hypothesis",
     "cannot confirm",
+    "cannot be confirmed",
     "not confirmed",
     "not due to",
     "does not cause",
@@ -2171,7 +2654,213 @@ CAUSAL_HEDGE_TERMS = (
 )
 PERSON_JUDGMENT_PATTERN = re.compile(
     r"(?:성과|역량|능력|유능|무능|우수|부족|부적합|적합성|책임|기여|"
-    r"리더십|평가|원인|문제|위험|교체|승진|보상|퇴출|해고)"
+    r"리더십|평가|원인|문제|위험|교체|승진|보상|퇴출|해고|감축|"
+    r"performance|competenc|capab|incompetent|competent|excellent|poor|weak|"
+    r"strong|talent|unfit|fit\b|reliable|unreliable|loyal|disloyal|"
+    r"trustworthy|untrustworthy|lazy|diligent|hardworking|honest|dishonest|"
+    r"deserv|raise|bonus|"
+    r"responsib|leadership|evaluat|promot|reward|dismiss|terminat|fire|layoff)",
+    flags=re.IGNORECASE,
+)
+INDIVIDUAL_REFERENCE_PATTERN = re.compile(
+    r"(?:해당|이|그)\s*(?:직원|사원|후보자|임원)|"
+    r"\b(?:this|that|the)\s+(?:employee|worker|candidate|applicant|manager|"
+    r"executive|director)\b",
+    flags=re.IGNORECASE,
+)
+AUTOMATED_HR_ACTION_PATTERN = re.compile(
+    r"(?:"
+    r"(?:채용|선발|승진|해고|감축|퇴출|교체|전보|배치|계약\s*해지|"
+    r"(?:근로|고용)\s*관계(?:를|을)?\s*종료|내보내)"
+    r"[^\n.!?。]{0,48}(?:해야|하여야|하라|권고|추천|대상|우선순위|제외|"
+    r"늘려|줄여|높여|낮춰|확대|축소|적합|부적합|고려|검토|보류|피하|미루|"
+    r"좋겠|낫(?:다|습니다)|바람직|합리적|하세|하십시오)"
+    r"|(?:보상|급여|임금)\s*(?:삭감|감액|동결|차등|인상)"
+    r"[^\n.!?。]{0,32}(?:해야|하여야|하라|권고|추천|고려)"
+    r"|(?:해야|하여야|권고|추천)[^\n.!?。]{0,36}"
+    r"(?:채용|선발|승진|해고|감축|퇴출|교체|전보|배치|계약\s*해지|"
+    r"(?:근로|고용)\s*관계(?:를|을)?\s*종료|내보내)"
+    r"|(?:should|must|ought\s+to|needs?\s+to|best\s+to|"
+    r"recommend(?:ed|s|ing)?|advise(?:d|s|ing)?|suggest(?:ed|s|ing)?|"
+    r"propos(?:e|ed|es|ing)|makes\s+sense\s+to|"
+    r"best\s+(?:option|course|choice)\s+is(?:\s+to)?|"
+    r"consider(?:ed|s|ing)?|target(?:ed|s|ing)?|better|preferable|advisable)"
+    r"[^\n.!?]{0,64}(?:hir(?:e|ing)|recruit|promot|reject|fire|dismiss|terminat|lay\s*off|"
+    r"downsiz|reduce\s+headcount|transfer|demot|pay\s*cut|salary\s*cut|"
+    r"(?:receive|get|be\s+paid)\s+(?:less|more|lower|higher|smaller)|"
+    r"determin\w*\s+(?:pay|salary|compensation|bonus|raise)|"
+    r"let\s+(?:the\s+\w+\s+)?go|advance|decline|"
+    r"remov\w*[^\n.!?]{0,24}from\s+consideration|"
+    r"end(?:ing)?\s+(?:the\s+)?employment\s+relationship)"
+    r"|(?:hir(?:e|ing)|recruit|promot|fire|dismiss|terminat|lay\s*off|downsiz|"
+    r"reduce\s+headcount|transfer|demot|pay\s*cut|salary\s*cut|"
+    r"let\s+(?:the\s+\w+\s+)?go|advance|decline|"
+    r"remov\w*[^\n.!?]{0,24}from\s+consideration|"
+    r"end(?:ing)?\s+(?:the\s+)?employment\s+relationship)"
+    r"[^\n.!?]{0,64}(?:should|must|recommend|suggest|propos|warrant|target|"
+    r"priorit|exclude|"
+    r"avoid|defer|hold|reject|prefer(?:able)?)"
+    r"|^(?:please\s+)?(?:avoid\s+)?(?:hire|recruit|promote|fire|dismiss|"
+    r"terminate|lay\s*off|downsize|transfer|demote|reject|advance|decline)\b"
+    r"|^(?:please\s+)?(?:increase|expand|reduce|decrease|freeze)\s+"
+    r"(?:hiring|recruitment|promotions?|headcount|compensation|pay)\b"
+    r"|^(?:please\s+)?remove\b[^\n.!?]{0,40}\b(?:candidate|applicant|employee)\b"
+    r"|^(?:please\s+)?let\b[^\n.!?]{0,40}\bgo\b"
+    r"|^(?:please\s+)?end\b[^\n.!?]{0,40}\bemployment\s+relationship\b"
+    r"|^(?:please\s+)?hold\b[^\n.!?]{0,40}\bpromotion\b"
+    r"|^(?:please\s+)?prefer\b[^\n.!?]{0,40}\b(?:applicant|candidate|employee)s?\b"
+    r"|(?:채용|선발|승진|해고|감축|퇴출|교체|전보|배치|계약\s*해지|"
+    r"(?:근로|고용)\s*관계(?:를|을)?\s*종료|내보내)"
+    r"[^\n.!?。]{0,48}(?:should|must|recommend|better|preferable|advisable|"
+    r"avoid|defer|hold|reject|proceed|approve)"
+    r"|(?:hir(?:e|ing)|recruit|promot|fire|dismiss|terminat|lay\s*off|downsiz|"
+    r"reduce\s+headcount|transfer|demot|pay\s*cut|salary\s*cut|"
+    r"end(?:ing)?\s+(?:the\s+)?employment\s+relationship)"
+    r"[^\n.!?。]{0,48}(?:해야|하여야|하라|권고|추천|대상|제외|보류|피하|미루|"
+    r"좋겠|낫(?:다|습니다)|바람직|합리적|하세|하십시오)"
+    r")",
+    flags=re.IGNORECASE,
+)
+PROTECTED_CHARACTERISTIC_PATTERN = re.compile(
+    r"(?:여성|남성|성별|임신|출산|육아|연령|나이|장애|종교|국적|인종|민족|"
+    r"노조|노동조합|혼인|결혼|가족상황|성적\s*지향|성\s*정체성|"
+    r"\b(?:female|male|women?|men|gender|pregnan\w*|matern\w*|mothers?|fathers?|"
+    r"parental|age|older|younger|"
+    r"elderly|disab\w*|religion|nationality|race|ethnic\w*|union|marital|"
+    r"family\s+status|sexual\s+orientation|gender\s+identity)\b)",
+    flags=re.IGNORECASE,
+)
+ADVERSE_GROUP_JUDGMENT_PATTERN = re.compile(
+    r"(?:성과|역량|능력|유능|무능|열등|우수|부족|부적합|적합성|위험|문제|"
+    r"채용|선발|승진|평가|보상|감축|해고|퇴출|교체|우선순위|제외|차별|"
+    r"performance|performer|productiv|competenc|competent|capab|incompetent|"
+    r"inferior|superior|excellent|poor|weak|strong|unreliable|disloyal|unfit|fit\b|"
+    r"(?:lower|less|smaller|more|higher|larger|no)\s+"
+    r"(?:pay|salary|compensation|bonus|raise)|paid\s+(?:less|more|lower|higher)|"
+    r"determin\w*\s+(?:pay|salary|compensation|bonus|raise)|"
+    r"risk|problem|hir(?:e|ing)|recruit|promot|evaluat|reward|compensat|layoff|"
+    r"dismiss|terminat|fire|priorit|exclude|discriminat|prefer|favor|avoid|"
+    r"defer|hold|reject)",
+    flags=re.IGNORECASE,
+)
+SAFE_HR_POLICY_LIMIT_PATTERN = re.compile(
+    r"(?:권고하지\s*않|추천하지\s*않|근거로\s*사용하지\s*않|자동으로\s*결정하지\s*않|"
+    r"사용해서는\s*안|기준으로\s*삼지\s*않|판단에\s*사용하지\s*않|"
+    r"검토해야\s*하는지|추가\s*검증(?:이)?\s*필요|"
+    r"판정할\s*수\s*없|평가할\s*수\s*없|알\s*수\s*없|"
+    r"하지\s*않아야|하지\s*말아야|하면\s*안|"
+    r"do\s+not\s+recommend|should\s+not\s+be\s+recommended|"
+    r"not\s+a\s+basis\s+for|not\s+a\s+predictor\s+of|"
+    r"does\s+not\s+(?:determine|predict)|"
+    r"(?:should|must)\s+not\s+determine|"
+    r"must\s+not\s+be\s+used\s+(?:to|as\s+a\s+basis\s+for)|"
+    r"(?:hiring|promotion|termination|compensation)\s+decisions?\s+"
+    r"must\s+not\s+be\s+automated|"
+    r"(?:(?:this|the)\s+(?:system|model)|ai)\s+should\s+not\s+recommend|"
+    r"no\s+(?:employee|worker|candidate|applicant)\s+should\s+(?:not\s+)?be\s+"
+    r"(?:hired|promoted|terminated|dismissed|fired)\s+automatically|"
+    r"(?:employee|worker|candidate|applicant)\s+should\s+not\s+be\s+"
+    r"(?:hired|promoted|terminated|dismissed|fired)\s+"
+    r"(?:automatically|from\s+aggregate\s+data\s+alone)|"
+    r"do\s+not\s+(?:hire|promote|terminate|dismiss|fire)\s+based\s+on\s+"
+    r"(?:gender|sex|age|race|ethnicity|religion|disability|pregnancy|union)|"
+    r"cannot\s+(?:be\s+)?(?:assess(?:ed)?|evaluat(?:e|ed)|determin(?:e|ed)|"
+    r"recommend(?:ed)?))",
+    flags=re.IGNORECASE,
+)
+FACTUAL_SUBJECT_PATTERN = re.compile(
+    r"(?:직원|인력|정규직|계약직|임원|이사회|대표이사|급여|보상|근속|매출|"
+    r"영업이익|순이익|자산|부채|자본|현금|생산성|비율|비중|격차|차이|지수|"
+    r"employee|workforce|headcount|hiring|recruitment|attrition|turnover|"
+    r"retention|absenteeism|executive|board|director|salary|pay|"
+    r"compensation|tenure|revenue|sales|profit|asset|liabilit|equity|cash|"
+    r"productivity|ratio|share|gap|index)",
+    flags=re.IGNORECASE,
+)
+FACTUAL_PREDICATE_PATTERN = re.compile(
+    r"(?:증가|감소|상승|하락|상회|하회|높(?:다|습니다|았|은)|낮(?:다|습니다|았|은)|"
+    r"많(?:다|습니다|았|은)|적(?:다|습니다|었|은)|유지|강화|개편|달성|기록|"
+    r"개선|악화|나타났|확인됐|확인되었|해당|보유|구성되|"
+    r"\b(?:increased|decreased|grew|declined|doubled|halved|rose|fell|"
+    r"higher|lower|exceeded|below|maintained|"
+    r"improved|worsened|recorded|shows?|has|have|is|are|was|were)\b)",
+    flags=re.IGNORECASE,
+)
+FACTUAL_HEDGE_PATTERN = re.compile(
+    r"(?:가설|가능성|추정|추측|예시|확인할 수 없|확인되지 않|단정할 수 없|"
+    r"판단할 수 없|추론하지 않|근거가 없|추가 검증|검증이 필요|일 수 있|"
+    r"일 수도 있|may\b|might\b|could\b|hypothesis|cannot confirm|"
+    r"not confirmed|no causal|requires validation|possible)",
+    flags=re.IGNORECASE,
+)
+STRUCTURED_NONCLAIM_VALUE_PATTERN = re.compile(
+    r"^(?:not\s+disclosed|additional\s+evidence(?:\s+review)?"
+    r"(?:\s+is)?\s+required|needs[_\s-]+review)$",
+    flags=re.IGNORECASE,
+)
+BROAD_NUMERIC_TOKEN_PATTERN = re.compile(
+    r"(?:(?<![A-Za-z0-9가-힣])-?\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?"
+    r"(?![A-Za-z0-9])|"
+    r"(?<![A-Za-z0-9가-힣])"
+    r"(?:영|공|일|이|삼|사|오|육|칠|팔|구|십|백|천|만|억|조){1,8}"
+    r"(?![A-Za-z0-9가-힣]))"
+)
+ENGLISH_NUMBER_WORD_PATTERN = re.compile(
+    r"(?<![A-Za-z])(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|"
+    r"nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|"
+    r"hundred|thousand|million|billion)(?![A-Za-z])",
+    flags=re.IGNORECASE,
+)
+POLICY_SPACED_KOREAN_TOKENS = (
+    "채용",
+    "선발",
+    "승진",
+    "해고",
+    "감축",
+    "퇴출",
+    "교체",
+    "전보",
+    "배치",
+    "계약해지",
+    "근로관계종료",
+    "고용관계종료",
+    "내보내",
+    "대상",
+    "우선순위",
+    "제외",
+    "보류",
+    "피하",
+    "권고",
+    "추천",
+    "해야",
+    "바람직",
+)
+POLICY_SPACED_ENGLISH_TOKENS = (
+    "hire",
+    "hiring",
+    "recruit",
+    "promote",
+    "promotion",
+    "terminate",
+    "termination",
+    "dismiss",
+    "fire",
+    "layoff",
+    "downsize",
+    "reject",
+    "decline",
+    "advance",
+)
+POLICY_CLAUSE_BOUNDARY_PATTERN = re.compile(
+    r"(?:[,;:]+|(?:하)?지만|않으면서|(?:으)?면서|(?:으)?며|그러나|그렇지만|반면|다만|"
+    r"그리고|또는|\b(?:but|however|yet|although|while|whereas|and|or)\b)",
+    flags=re.IGNORECASE,
+)
+CLAIM_CLAUSE_BOUNDARY_PATTERN = re.compile(
+    r"(?:(?<!\d)[,;](?!\d)|(?:하)?지만|그러나|그렇지만|반면|다만|그리고|또한|"
+    r"\b(?:but|however|yet|although|while|whereas|and)\b)",
+    flags=re.IGNORECASE,
 )
 
 
@@ -2183,11 +2872,73 @@ def _claim_sentences(text: str) -> list[str]:
     ]
 
 
+def _claim_clauses(text: str) -> list[str]:
+    return [
+        clause.strip()
+        for sentence in _claim_sentences(text)
+        for clause in CLAIM_CLAUSE_BOUNDARY_PATTERN.split(sentence)
+        if clause.strip()
+    ]
+
+
+def _policy_sentences(text: str) -> list[str]:
+    """Normalize simple whitespace evasions before applying output policy."""
+
+    normalized_lines: list[str] = []
+    for raw_line in re.split(r"[\r\n]+", text):
+        normalized = re.sub(r"[\t\f\v ]+", " ", raw_line).strip()
+        for token in POLICY_SPACED_KOREAN_TOKENS:
+            spaced_token = r"\s*".join(re.escape(character) for character in token)
+            normalized = re.sub(spaced_token, token, normalized)
+        if normalized:
+            normalized_lines.append(normalized)
+    joined = re.sub(r"\s+", " ", text).strip()
+    for token in POLICY_SPACED_KOREAN_TOKENS:
+        spaced_token = r"\s*".join(re.escape(character) for character in token)
+        joined = re.sub(spaced_token, token, joined)
+    policy_inputs = [*normalized_lines]
+    if joined and joined not in policy_inputs:
+        policy_inputs.append(joined)
+    rejoined_fragments = re.sub(
+        r"(?<=[A-Za-z])[\r\n]+\s*(?=[A-Za-z])", "", text
+    ).strip()
+    if rejoined_fragments and rejoined_fragments not in policy_inputs:
+        policy_inputs.append(rejoined_fragments)
+    spelling_normalized = text
+    for token in POLICY_SPACED_ENGLISH_TOKENS:
+        spaced_token = r"\b" + r"[\s._-]*".join(
+            re.escape(character) for character in token
+        ) + r"\b"
+        spelling_normalized = re.sub(
+            spaced_token,
+            token,
+            spelling_normalized,
+            flags=re.IGNORECASE,
+        )
+    spelling_normalized = re.sub(r"\s+", " ", spelling_normalized).strip()
+    if spelling_normalized and spelling_normalized not in policy_inputs:
+        policy_inputs.append(spelling_normalized)
+    return [
+        clause.strip()
+        for normalized in policy_inputs
+        for separator_part in re.split(
+            r"[/|+&\\\u2014\u2013\u2192\u2022\uff0f()\[\]{}]+|"
+            r"\b(?:nevertheless|nonetheless|instead|except|also|still|"
+            r"rather|regardless)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        for sentence in _claim_sentences(separator_part)
+        for clause in POLICY_CLAUSE_BOUNDARY_PATTERN.split(sentence)
+        if clause.strip()
+    ]
+
+
 def _contains_unsupported_causal_assertion(text: str) -> bool:
-    for sentence in _claim_sentences(text):
-        if not CAUSAL_MARKER_PATTERN.search(sentence):
+    for clause in _policy_sentences(text):
+        if not CAUSAL_MARKER_PATTERN.search(clause):
             continue
-        lowered = sentence.casefold()
+        lowered = clause.casefold()
         if any(term in lowered for term in CAUSAL_HEDGE_TERMS):
             continue
         return True
@@ -2199,27 +2950,815 @@ def _contains_fabricated_person_judgment(
     observations: Sequence[WorkforceObservation | Mapping[str, Any]],
 ) -> bool:
     return any(
-        _possible_fabricated_person_reference(sentence, observations)
+        (
+            _possible_fabricated_person_reference(sentence, observations)
+            or _possible_named_person_reference(sentence, observations)
+            or INDIVIDUAL_REFERENCE_PATTERN.search(sentence)
+        )
         and PERSON_JUDGMENT_PATTERN.search(sentence)
-        for sentence in _claim_sentences(text)
+        and not SAFE_HR_POLICY_LIMIT_PATTERN.search(sentence)
+        for sentence in _policy_sentences(text)
     )
+
+
+def _possible_named_person_reference(
+    text: str,
+    observations: Sequence[WorkforceObservation | Mapping[str, Any]],
+) -> bool:
+    known_organizations = {
+        str(_safe_company(
+            item.get("company") if isinstance(item, Mapping) else item.company
+        ).get("corp_name") or "").strip().casefold()
+        for item in observations
+    }
+    candidates = [
+        *KOREAN_PERSON_NAME_PATTERN.findall(text),
+        *KOREAN_PERSON_WITH_ROLE_PATTERN.findall(text),
+        *KOREAN_TWO_SYLLABLE_JUDGMENT_NAME_PATTERN.findall(text),
+        *KOREAN_SHORT_PERSON_NAME_PATTERN.findall(text),
+        *KOREAN_COMPOUND_SURNAME_PATTERN.findall(text),
+        *ENGLISH_PERSON_NAME_PATTERN.findall(text),
+        *ENGLISH_INITIAL_PERSON_NAME_PATTERN.findall(text),
+        *ENGLISH_LABELED_LOWERCASE_PERSON_NAME_PATTERN.findall(text),
+        *ENGLISH_CONTEXTUAL_LOWERCASE_PERSON_NAME_PATTERN.findall(text),
+    ]
+    return any(
+        candidate.strip().casefold() not in known_organizations
+        and candidate.strip().casefold() not in GENERIC_PERSON_LIKE_TERMS
+        for candidate in candidates
+    )
+
+
+def _contains_automated_hr_action_recommendation(text: str) -> bool:
+    return any(
+        AUTOMATED_HR_ACTION_PATTERN.search(clause.strip())
+        and not SAFE_HR_POLICY_LIMIT_PATTERN.search(clause.strip())
+        for sentence in _policy_sentences(text)
+        for clause in re.split(
+            r"(?:왜냐하면|때문에|따라서|그러므로|\b(?:because|since|so|therefore|thus|then)\b)",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if clause.strip()
+    )
+
+
+STRUCTURED_HR_ACTION_KEY_PATTERN = re.compile(
+    r"(?:employmentaction|personnelaction|hraction|"
+    r"hire|hiring|recruit|promotion|promote|termination|terminate|dismiss|fire|"
+    r"layoff|downsize|headcountreduction|paycut|salarycut|demotion|demote|"
+    r"approve|approval|select|selection|eligible|eligibility|retain|retention|"
+    r"reject|decline|advance|proceed|"
+    r"채용|선발|승진|해고|감축|퇴출|교체|전보|배치|계약해지|고용관계종료|"
+    r"근로관계종료|보상삭감|급여삭감)"
+)
+STRUCTURED_HR_ANALYTIC_KEY_PATTERN = re.compile(
+    r"(?:rate|ratio|count|total|metric|metrics|trend|change|delta|average|"
+    r"median|index|benchmark|analysis|analytics|readiness|coverage|gap|"
+    r"available|availability|"
+    r"incomplete|비율|비중|수|합계|지표|추세|변화|평균|중앙값|지수|"
+    r"벤치마크|분석|준비도|커버리지|격차|미완료)"
+)
+STRUCTURED_HR_CONTAINER_KEY_PATTERN = re.compile(
+    r"^(?:action|recommendation|decision|outcome|employmentdecision|"
+    r"personneldecision|employmentaction|personnelaction|hraction|"
+    r"finaldecision|recommendedaction|actioncode|decisioncode|recommendationcode|"
+    r"조치|권고|추천|결정|판단|결과)$"
+)
+STRUCTURED_HR_ACTION_VALUE_TOKEN = (
+    r"(?:hire|hiring|recruit|recruiting|promotion|promote|promoting|termination|"
+    r"terminate|terminating|dismiss|dismissing|fire|firing|layoff|layingoff|"
+    r"downsize|downsizing|headcountreduction|paycut|salarycut|demotion|demote|"
+    r"demoting|reject|rejected|rejecting|decline|declined|advance|approved|"
+    r"approve|selected|select|selecting|"
+    r"notselected|ineligible|letgo|holdpromotion|"
+    r"rejectcandidate|excludeapplicant|donothire|donotpromote|endemployment|"
+    r"채용|선발|승진|해고|감축|퇴출|교체|전보|배치|계약해지|고용관계종료|"
+    r"근로관계종료|보상삭감|급여삭감)"
+)
+STRUCTURED_HR_QUALIFIED_CONTAINER_KEY_PATTERN = re.compile(
+    r"^[a-z0-9]*(?:recommendation|decision|outcome)$|"
+    r"^(?:(?:candidate|applicant|employee|worker|staff|person|employment|"
+    r"personnel|hr|final|recommended)+)action$"
+)
+STRUCTURED_HR_ACTION_VALUE_PATTERN = re.compile(
+    rf"^{STRUCTURED_HR_ACTION_VALUE_TOKEN}$"
+)
+STRUCTURED_HR_DIRECTIVE_SUFFIX_TOKEN = (
+    r"(?:the|current|this|that|a|an|now|immediately|candidate|applicant|"
+    r"employee|worker|staff|person|target|recommended|approved|execute|execution)"
+)
+STRUCTURED_HR_ACTION_VALUE_WITH_SUFFIX_PATTERN = re.compile(
+    rf"^{STRUCTURED_HR_ACTION_VALUE_TOKEN}"
+    rf"(?:[\s_:/.+-]+{STRUCTURED_HR_DIRECTIVE_SUFFIX_TOKEN})+$"
+)
+STRUCTURED_HR_ACTION_ATTACHED_DIRECTIVE_PATTERN = re.compile(
+    rf"^{STRUCTURED_HR_ACTION_VALUE_TOKEN}"
+    rf"(?:{STRUCTURED_HR_DIRECTIVE_SUFFIX_TOKEN})+$"
+)
+STRUCTURED_HR_ACTION_TARGET_PATTERN = re.compile(
+    rf"^{STRUCTURED_HR_ACTION_VALUE_TOKEN}[a-z0-9]{{0,40}}"
+    r"(?:candidate|applicant|employee|worker|staff|person|target|report)"
+    r"(?:now|immediately|recommended|approved|execute|execution)?$"
+)
+STRUCTURED_HR_EXECUTION_KEY_PATTERN = re.compile(
+    r"^(?:execute|execution|apply|activate|enforce|implement|commit|dispatch|"
+    r"실행|적용|집행)$"
+)
+STRUCTURED_HR_ANALYTIC_DIRECTIVE_KEY_PATTERN = re.compile(
+    r"(?:now|immediately|execute|execution|apply|activate|enforce|implement|"
+    r"commit|dispatch)$"
+)
+STRUCTURED_HR_ACTION_WORDS = frozenset({
+    "hire", "hiring", "recruit", "recruiting", "promotion", "promote",
+    "promoting", "termination", "terminate", "terminating", "dismiss",
+    "dismissing", "fire", "firing", "layoff", "downsize", "downsizing",
+    "paycut", "salarycut", "demotion", "demote", "demoting", "reject",
+    "rejected", "rejecting", "decline", "declined", "advance", "approve",
+    "approved", "select", "selected", "selecting", "selection", "retain",
+    "retention", "exclude", "reduce", "offboard", "remove", "deny",
+    "shortlist", "disqualify", "separate", "release", "drop", "blacklist",
+    "sack", "cancel", "withdraw", "rescind", "block", "cut", "lower",
+    "score", "rate",
+})
+STRUCTURED_HR_ACTION_VERB_WORDS = frozenset({
+    "hire", "recruit", "recruiting", "promote", "promoting",
+    "terminate", "terminating", "dismiss", "dismissing", "fire", "firing",
+    "layoff", "downsize", "downsizing", "demote", "demoting", "reject",
+    "rejecting", "decline", "advance", "approve", "select", "selecting",
+    "retain", "exclude", "reduce", "offboard", "remove", "deny",
+    "shortlist", "disqualify", "separate", "release", "drop", "blacklist",
+    "sack", "cancel", "withdraw", "rescind", "block", "cut", "lower",
+    "score", "rate",
+})
+STRUCTURED_HR_ANALYTIC_WORDS = frozenset({
+    "rate", "ratio", "count", "total", "metric", "metrics", "trend",
+    "change", "delta", "average", "median", "index", "benchmark",
+    "analysis", "analytics", "readiness", "coverage", "gap", "incomplete",
+    "note", "notes", "source", "sources", "reason", "reasons", "evidence",
+    "description", "summary", "status", "context", "explanation",
+    "scenario", "scenarios", "pool", "pools", "size", "year", "years",
+    "date", "dates", "timestamp", "timestamps",
+    "quartile", "quartiles", "bound", "bounds", "band", "bands",
+    "threshold", "thresholds", "distribution", "distributions",
+    "available", "availability",
+})
+STRUCTURED_HR_METADATA_WORDS = frozenset({
+    "note", "notes", "source", "sources", "reason", "reasons", "evidence",
+    "description", "label", "name", "text", "comment", "comments", "context",
+    "explanation", "summary", "status", "role", "roles", "date", "dates",
+    "manager", "managers", "year", "years", "timestamp", "timestamps",
+    "value", "values", "confidence", "model", "version",
+    "quality", "uncertainty", "limitation", "limitations", "generated",
+})
+STRUCTURED_HR_TARGET_WORDS = frozenset({
+    "candidate", "candidates", "applicant", "applicants", "employee",
+    "employees", "worker", "workers", "staff", "person", "people", "target",
+    "targets", "report", "reports", "manager", "managers", "headcount",
+    "offer", "offers", "promotion", "compensation", "salary", "pay",
+})
+STRUCTURED_HR_DIRECTIVE_WORDS = frozenset({
+    "now", "immediately", "execute", "execution", "apply", "activate",
+    "enforce", "implement", "commit", "dispatch", "run", "silently",
+    "automatically", "all",
+})
+STRUCTURED_HR_DECISION_STATE_WORDS = frozenset({
+    "yes", "no", "true", "false", "approved", "denied", "rejected",
+    "selected", "ineligible", "eligible", "proceed", "go", "on", "pass",
+    "notrecommended", "complete",
+})
+STRUCTURED_HR_CONTROL_WORDS = frozenset({
+    "result", "decision", "trigger", "enabled", "enable", "active", "activate",
+    "execute", "execution", "apply", "enforce", "implement", "commit",
+    "dispatch", "run", "perform", "submit", "confirmed", "accepted",
+    "authorized", "scheduled", "queued", "chosen", "completed", "committed",
+    "picked", "finalized", "recommended",
+})
+STRUCTURED_HR_CONTAINER_WORDS = frozenset({
+    "action", "actions", "recommendation", "recommendations", "decision",
+    "decisions", "outcome", "outcomes",
+})
+STRUCTURED_HR_KOREAN_ACTION_CODE_PATTERN = re.compile(
+    r"^(?:채용|선발|승진|해고|감원|퇴출|교체|배치|계약해지|고용관계종료)"
+    r"(?:대상자|후보자|직원|근로자|지원자|임직원)(?:즉시)?$"
+)
+STRUCTURED_HR_ADDITIONAL_KOREAN_ACTION_CODE_PATTERN = re.compile(
+    r"^(?:면직|계약종료)(?:대상자|후보자|직원|근로자|지원자|임직원)(?:즉시)?$"
+)
+STRUCTURED_HR_SAFE_ANALYTIC_VALUE_PATTERN = re.compile(
+    r"^(?:hiring\s+manager|employee\s+hiring\s+rate|"
+    r"employee\s+firing\s+count|hire\s+date)$",
+    flags=re.IGNORECASE,
+)
+STRUCTURED_HR_SAFE_ANALYTIC_WORD_SEQUENCES = frozenset({
+    ("hiring", "manager"),
+    ("hire", "date"),
+    ("promotion", "candidate", "pool"),
+    ("candidate", "shortlist"),
+    ("layoff", "scenario"),
+})
+
+
+def _structured_words(value: Any) -> tuple[str, ...]:
+    rendered = str(value).strip()
+    rendered = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", rendered)
+    rendered = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", rendered)
+    return tuple(
+        token.casefold() for token in re.findall(r"[A-Za-z0-9]+", rendered)
+    )
+
+
+def _is_safe_structured_hr_analytic_value(value: Any) -> bool:
+    rendered = str(value).strip().casefold()
+    words = _structured_words(value)
+    analytic_qualifiers = (
+        STRUCTURED_HR_ANALYTIC_WORDS | STRUCTURED_HR_METADATA_WORDS
+    ).intersection(words)
+    return bool(
+        STRUCTURED_HR_SAFE_ANALYTIC_VALUE_PATTERN.fullmatch(rendered)
+        or words in STRUCTURED_HR_SAFE_ANALYTIC_WORD_SEQUENCES
+        or (
+            words
+            and words[-1] in {"score", "index"}
+            and not STRUCTURED_HR_DIRECTIVE_WORDS.intersection(words)
+            and not STRUCTURED_HR_DECISION_STATE_WORDS.intersection(words)
+        )
+        or (
+            analytic_qualifiers
+            and not STRUCTURED_HR_DIRECTIVE_WORDS.intersection(words)
+            and not STRUCTURED_HR_DECISION_STATE_WORDS.intersection(words)
+        )
+    )
+
+
+def _is_safe_structured_hr_decision_analytic_value(value: Any) -> bool:
+    words = _structured_words(value)
+    analytic_qualifiers = (
+        STRUCTURED_HR_ANALYTIC_WORDS - STRUCTURED_HR_ACTION_VERB_WORDS
+    ).intersection(words)
+    return bool(
+        analytic_qualifiers
+        and not (
+            STRUCTURED_HR_ACTION_VERB_WORDS.intersection(words)
+            and STRUCTURED_HR_TARGET_WORDS.intersection(words)
+        )
+        and not STRUCTURED_HR_DIRECTIVE_WORDS.intersection(words)
+        and not STRUCTURED_HR_DECISION_STATE_WORDS.intersection(words)
+    )
+
+
+def _is_structured_hr_container_key(value: Any) -> bool:
+    words = _structured_words(value)
+    key_token = _key_token(value)
+    if words and words[0] in {"non", "no", "not"}:
+        return False
+    return bool(
+        STRUCTURED_HR_CONTAINER_KEY_PATTERN.fullmatch(key_token)
+        or STRUCTURED_HR_QUALIFIED_CONTAINER_KEY_PATTERN.fullmatch(key_token)
+        or (words and words[-1] in STRUCTURED_HR_CONTAINER_WORDS)
+        or (
+            len(words) >= 2
+            and words[-1] in {
+                "list", "lists", "items", "item", "output", "outputs",
+                "payload", "payloads", "response", "responses", "result",
+                "results", "data", "bundle", "bundles", "record", "records",
+                "envelope", "envelopes", "object", "objects", "snapshot",
+                "snapshots", "context", "contexts",
+            }
+            and any(word in STRUCTURED_HR_CONTAINER_WORDS for word in words[:-1])
+        )
+    )
+
+
+def _is_structured_hr_decision_namespace_key(value: Any) -> bool:
+    """Recognize decision namespaces even when producers omit word boundaries."""
+
+    key_token = _key_token(value)
+    if re.match(
+        r"^(?:non|no|not)(?:decision|recommendation|outcome|action)",
+        key_token,
+    ):
+        return False
+    return bool(
+        "decision" in key_token
+        or "recommendation" in key_token
+        or "outcome" in key_token
+        or key_token.startswith("action")
+    )
+
+
+def _is_structured_hr_action_value(value: Any) -> bool:
+    rendered = str(value).strip().casefold()
+    words = _structured_words(value)
+    if _is_safe_structured_hr_analytic_value(value):
+        return False
+    action_words = STRUCTURED_HR_ACTION_WORDS.intersection(words)
+    action_verbs = STRUCTURED_HR_ACTION_VERB_WORDS.intersection(words)
+    analytic_words = STRUCTURED_HR_ANALYTIC_WORDS.intersection(words) - action_words
+    target_words = STRUCTURED_HR_TARGET_WORDS.intersection(words)
+    directive_words = STRUCTURED_HR_DIRECTIVE_WORDS.intersection(words)
+    decision_state_words = STRUCTURED_HR_DECISION_STATE_WORDS.intersection(words)
+    word_policy_match = bool(
+        action_words
+        and (
+            (
+                action_verbs
+                and (
+                    directive_words
+                    or decision_state_words
+                    or (target_words and not analytic_words)
+                    or not analytic_words
+                )
+            )
+            or (not action_verbs and not analytic_words and (target_words or directive_words))
+        )
+    )
+    return bool(
+        word_policy_match
+        or STRUCTURED_HR_KOREAN_ACTION_CODE_PATTERN.fullmatch(str(value).strip())
+        or STRUCTURED_HR_ADDITIONAL_KOREAN_ACTION_CODE_PATTERN.fullmatch(
+            str(value).strip()
+        )
+        or STRUCTURED_HR_ACTION_VALUE_PATTERN.fullmatch(_key_token(rendered))
+        or STRUCTURED_HR_ACTION_ATTACHED_DIRECTIVE_PATTERN.fullmatch(
+            _key_token(rendered)
+        )
+        or STRUCTURED_HR_ACTION_TARGET_PATTERN.fullmatch(_key_token(rendered))
+        or STRUCTURED_HR_ACTION_VALUE_WITH_SUFFIX_PATTERN.fullmatch(rendered)
+    )
+
+
+def _is_structured_hr_action_leaf(value: Any) -> bool:
+    rendered = str(value).strip()
+    rendered_words = _structured_words(rendered)
+    action_words = STRUCTURED_HR_ACTION_WORDS.intersection(rendered_words)
+    if (
+        SAFE_HR_POLICY_LIMIT_PATTERN.search(rendered)
+        and len(action_words) >= 2
+        and STRUCTURED_HR_ACTION_VERB_WORDS.intersection(rendered_words)
+        and (
+            STRUCTURED_HR_TARGET_WORDS.intersection(rendered_words)
+            or STRUCTURED_HR_DIRECTIVE_WORDS.intersection(rendered_words)
+        )
+    ):
+        # A leading safety disclaimer must not shield a later executable HR
+        # instruction, even when an unseen connector or punctuation is used.
+        return True
+    return any(
+        _is_structured_hr_action_value(clause)
+        and not SAFE_HR_POLICY_LIMIT_PATTERN.search(clause)
+        for clause in _policy_sentences(rendered)
+    )
+
+
+def _structured_control_is_enabled(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return _key_token(value) not in {
+            "", "false", "no", "disabled", "inactive", "off", "notauthorized",
+            "notconfirmed", "notscheduled", "notqueued", "notperformed",
+            "notsubmitted", "notexecuted", "notapplied",
+        }
+    return value is not None
+
+
+def _contains_structured_hr_action_value(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _contains_structured_hr_action_value(child) for child in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_structured_hr_action_value(child) for child in value)
+    return isinstance(value, str) and _is_structured_hr_action_leaf(value)
+
+
+def _contains_structured_hr_execution_directive(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_words = _structured_words(key)
+            if (
+                (
+                    STRUCTURED_HR_EXECUTION_KEY_PATTERN.fullmatch(_key_token(key))
+                    or STRUCTURED_HR_DIRECTIVE_WORDS.intersection(key_words)
+                )
+                and isinstance(child, (str, int, float, bool))
+                and child not in (None, "", False, 0)
+            ):
+                return True
+            if _contains_structured_hr_execution_directive(child):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(
+            _contains_structured_hr_execution_directive(child) for child in value
+        )
+    return False
+
+
+def _contains_structured_hr_action_recommendation(
+    value: Any,
+    *,
+    _decision_context: bool = False,
+    _action_context: bool = False,
+    _decision_namespace: bool = False,
+) -> bool:
+    """Fail closed on structured HR directives, including nested scalar leaves."""
+
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_token = _key_token(key)
+            decision_named_key = _is_structured_hr_decision_namespace_key(key)
+            action_like_key = bool(
+                STRUCTURED_HR_ACTION_KEY_PATTERN.search(key_token)
+            )
+            analytic_key = bool(
+                action_like_key
+                and STRUCTURED_HR_ANALYTIC_KEY_PATTERN.search(key_token)
+            )
+            metadata_key = bool(
+                STRUCTURED_HR_METADATA_WORDS.intersection(_structured_words(key))
+            )
+            action_key = action_like_key and not analytic_key and not metadata_key
+            container_key = _is_structured_hr_container_key(key)
+            if isinstance(child, str) and _is_structured_hr_action_leaf(child):
+                return True
+            if action_like_key and (
+                _contains_structured_hr_action_value(child)
+                or _contains_structured_hr_execution_directive(child)
+            ):
+                return True
+            if analytic_key and (
+                _contains_structured_hr_action_value(child)
+                or _contains_structured_hr_execution_directive(child)
+                or (
+                    (
+                        STRUCTURED_HR_ANALYTIC_DIRECTIVE_KEY_PATTERN.search(key_token)
+                        or STRUCTURED_HR_DIRECTIVE_WORDS.intersection(
+                            _structured_words(key)
+                        )
+                    )
+                    and isinstance(child, (str, int, float, bool))
+                    and child not in (None, "", False, 0)
+                )
+            ):
+                return True
+            if container_key and isinstance(child, bool):
+                return True
+            if (
+                (
+                    STRUCTURED_HR_EXECUTION_KEY_PATTERN.fullmatch(key_token)
+                    or STRUCTURED_HR_DIRECTIVE_WORDS.intersection(
+                        _structured_words(key)
+                    )
+                )
+                and isinstance(child, (str, int, float, bool))
+                and _structured_control_is_enabled(child)
+            ):
+                return True
+            if (
+                _decision_context
+                and key_token == "result"
+                and (
+                    isinstance(child, (int, float, bool))
+                    or (
+                        isinstance(child, str)
+                        and _key_token(child) in STRUCTURED_HR_DECISION_STATE_WORDS
+                    )
+                )
+            ):
+                return True
+            if (
+                (_decision_context or _decision_namespace)
+                and STRUCTURED_HR_CONTROL_WORDS.intersection(_structured_words(key))
+                and isinstance(child, (str, int, float, bool))
+                and _structured_control_is_enabled(child)
+            ):
+                return True
+            if _decision_namespace:
+                namespace_key_words = _structured_words(key)
+                if (
+                    isinstance(child, str)
+                    and (
+                        _key_token(child) in STRUCTURED_HR_DECISION_STATE_WORDS
+                        or _key_token(child) in STRUCTURED_HR_CONTROL_WORDS
+                    )
+                ):
+                    return True
+                if (
+                    isinstance(child, bool)
+                    and child
+                    and (
+                        STRUCTURED_HR_DECISION_STATE_WORDS.intersection(
+                            namespace_key_words
+                        )
+                        or (
+                            STRUCTURED_HR_ACTION_WORDS.intersection(
+                                namespace_key_words
+                            )
+                            and not {"available", "availability"}.intersection(
+                                namespace_key_words
+                            )
+                        )
+                    )
+                ):
+                    return True
+            if (
+                container_key
+                and isinstance(child, str)
+                and _key_token(child) in STRUCTURED_HR_DECISION_STATE_WORDS
+            ):
+                return True
+            if (
+                _decision_context
+                and key_token.endswith("code")
+                and (
+                    (
+                        isinstance(child, (int, float))
+                        and not isinstance(child, bool)
+                    )
+                    or (
+                        isinstance(child, str)
+                        and not _is_safe_structured_hr_decision_analytic_value(child)
+                    )
+                )
+            ):
+                return True
+            if action_key and isinstance(child, (str, int, float, bool)):
+                if child not in (None, ""):
+                    return True
+            if (
+                _decision_context
+                and key_token in {
+                    "approved",
+                    "eligible",
+                    "proceed",
+                    "selected",
+                }
+                and isinstance(child, (bool, int, float, str))
+                and child not in (None, "")
+            ):
+                return True
+            if (
+                _decision_context
+                and key_token == "status"
+                and isinstance(child, str)
+                and (
+                    _is_structured_hr_action_value(child)
+                    or _key_token(child) in STRUCTURED_HR_DECISION_STATE_WORDS
+                )
+            ):
+                return True
+            safe_decision_code = bool(
+                key_token.endswith("code")
+                and isinstance(child, str)
+                and _is_safe_structured_hr_decision_analytic_value(child)
+            )
+            if (
+                _decision_context
+                and not (
+                    metadata_key
+                    or analytic_key
+                    or container_key
+                    or safe_decision_code
+                    or _is_safe_structured_hr_analytic_value(key)
+                )
+                and isinstance(child, (str, int, float, bool))
+                and _structured_control_is_enabled(child)
+            ):
+                # Unknown truthy scalar fields inside a decision container are
+                # treated as executable state.  This prevents new aliases such
+                # as ``chosen``, ``committed`` or ``completed`` from silently
+                # bypassing the explicit control-word allow/deny lists.
+                return True
+            if action_key:
+                if isinstance(child, bool):
+                    return True
+                if isinstance(child, (int, float)) and not isinstance(child, bool):
+                    return True
+                if isinstance(child, str):
+                    normalized = child.strip().casefold()
+                    if normalized in {
+                        "yes",
+                        "no",
+                        "true",
+                        "false",
+                        "recommended",
+                        "not recommended",
+                        "approve",
+                        "approved",
+                        "deny",
+                        "denied",
+                        "decline",
+                        "declined",
+                        "reject",
+                        "rejected",
+                        "execute",
+                        "실행",
+                        "승인",
+                        "권고",
+                    } or _is_structured_hr_action_value(normalized):
+                        return True
+            child_context = _decision_context or action_key or container_key
+            child_action_context = _action_context or action_key
+            child_decision_namespace = (
+                _decision_namespace
+                or decision_named_key
+                or action_key
+                or container_key
+            )
+            if (
+                isinstance(child, str)
+                and child_context
+                and _is_structured_hr_action_value(child)
+            ):
+                return True
+            if _contains_structured_hr_action_recommendation(
+                child,
+                _decision_context=child_context,
+                _action_context=child_action_context,
+                _decision_namespace=child_decision_namespace,
+            ):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        if any(
+            isinstance(child, str)
+            and _is_structured_hr_action_leaf(child)
+            for child in value
+        ):
+            return True
+        if _action_context and any(child not in (None, "") for child in value):
+            return True
+        if _decision_context and any(
+            (
+                isinstance(child, (int, float, bool))
+                and _structured_control_is_enabled(child)
+            )
+            or (
+                isinstance(child, str)
+                and child.strip()
+                and not STRUCTURED_NONCLAIM_VALUE_PATTERN.fullmatch(child.strip())
+                and not SAFE_HR_POLICY_LIMIT_PATTERN.search(child)
+                and not _is_safe_structured_hr_decision_analytic_value(child)
+            )
+            for child in value
+        ):
+            return True
+        return any(
+            _contains_structured_hr_action_recommendation(
+                child,
+                _decision_context=_decision_context,
+                _action_context=_action_context,
+                _decision_namespace=_decision_namespace,
+            )
+            for child in value
+        )
+    if _action_context and value not in (None, ""):
+        return True
+    if isinstance(value, str):
+        if _decision_context and _is_structured_hr_action_value(value):
+            return True
+        if (
+            SAFE_HR_POLICY_LIMIT_PATTERN.search(value)
+            and _is_structured_hr_action_leaf(value)
+        ):
+            return True
+    return False
+
+
+def _contains_protected_characteristic_judgment(text: str) -> bool:
+    return any(
+        PROTECTED_CHARACTERISTIC_PATTERN.search(clause.strip())
+        and ADVERSE_GROUP_JUDGMENT_PATTERN.search(clause.strip())
+        and not SAFE_HR_POLICY_LIMIT_PATTERN.search(clause.strip())
+        for sentence in _policy_sentences(text)
+        for clause in re.split(
+            r"(?:왜냐하면|때문에|따라서|그러므로|\b(?:because|since|so|therefore|thus|then)\b)",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if clause.strip()
+    )
+
+
+def _uncited_factual_claims(
+    value: Any,
+    known_evidence_ids: set[str],
+) -> list[dict[str, Any]]:
+    unsupported: list[dict[str, Any]] = []
+    raw_segments = _claim_text_segments(value)
+    candidates = [
+        (segment_index, clause)
+        for segment_index, segment in enumerate(raw_segments, start=1)
+        for clause in (_claim_clauses(segment) or [segment])
+    ]
+    if isinstance(value, str) and len(raw_segments) > 1:
+        joined_text = re.sub(r"\s+", " ", value).strip()
+        candidates.extend(
+            (1, sentence)
+            for sentence in _claim_sentences(joined_text)
+            if sentence not in raw_segments
+        )
+    emitted: set[tuple[int, str]] = set()
+    for segment_index, line in candidates:
+        citations = {
+            citation.casefold()
+            for citation in re.findall(
+                r"EV-[0-9a-f]{12}", line, flags=re.IGNORECASE
+            )
+            if citation.casefold() in known_evidence_ids
+        }
+        if citations:
+            continue
+        without_ids = re.sub(
+            r"EV-[A-Za-z0-9_-]{4,64}", "", line, flags=re.IGNORECASE
+        )
+        without_list_marker = re.sub(
+            r"^\s*(?:\d+|[A-Za-z])[.)]\s+", "", without_ids
+        )
+        has_subject = FACTUAL_SUBJECT_PATTERN.search(without_list_marker)
+        if not has_subject:
+            continue
+        broad_number = (
+            BROAD_NUMERIC_TOKEN_PATTERN.search(without_list_marker)
+            or ENGLISH_NUMBER_WORD_PATTERN.search(without_list_marker)
+        )
+        unhedged_fact = (
+            FACTUAL_PREDICATE_PATTERN.search(without_list_marker)
+            and not FACTUAL_HEDGE_PATTERN.search(without_list_marker)
+        )
+        if broad_number or unhedged_fact:
+            claim_type = "numeric" if broad_number else "factual"
+            key = (segment_index, claim_type)
+            if key not in emitted:
+                emitted.add(key)
+                unsupported.append({
+                    "segment_index": segment_index,
+                    "claim_type": claim_type,
+                })
+    return unsupported
 
 
 def _claim_text_segments(value: Any) -> list[str]:
     if isinstance(value, str):
         return value.splitlines() or [value]
     if isinstance(value, Mapping):
-        return [
-            segment
-            for child in value.values()
-            for segment in _claim_text_segments(child)
-        ]
+        segments: list[str] = []
+        aggregate_parts: list[str] = []
+        for key, child in value.items():
+            key_text = str(key)
+            if isinstance(child, (str, int, float, bool)) and child is not None:
+                segments.append(f"{key_text}: {child}")
+                key_token = _key_token(key)
+                if not any(
+                    marker in key_token
+                    for marker in ("citation", "evidenceid", "sourceid", "근거")
+                ) and not (
+                    isinstance(child, str)
+                    and STRUCTURED_NONCLAIM_VALUE_PATTERN.fullmatch(child.strip())
+                ):
+                    aggregate_parts.extend((key_text, str(child)))
+            else:
+                segments.extend(_claim_text_segments(key))
+                child_segments = _claim_text_segments(child)
+                segments.extend(child_segments)
+                if not any(
+                    marker in _key_token(key)
+                    for marker in ("citation", "evidenceid", "sourceid", "근거")
+                ):
+                    segments.extend(
+                        f"{key_text} {child_segment}"
+                        for child_segment in child_segments
+                    )
+        if len(aggregate_parts) >= 4:
+            segments.append(" ".join(aggregate_parts))
+        return segments
     if isinstance(value, (list, tuple)):
-        return [
+        segments = [
             segment
             for child in value
             for segment in _claim_text_segments(child)
         ]
+        aggregate_parts = [
+            str(child)
+            for child in value
+            if isinstance(child, (str, int, float, bool))
+            and child is not None
+            and not (
+                isinstance(child, str)
+                and re.fullmatch(
+                    r"EV-[A-Za-z0-9_-]{4,64}",
+                    child.strip(),
+                    flags=re.IGNORECASE,
+                )
+            )
+        ]
+        if len(aggregate_parts) >= 2:
+            segments.append(" ".join(aggregate_parts))
+        return segments
     return []
 
 
@@ -2232,17 +3771,19 @@ class StrategyInterpreterAgent:
 
     def run(self, observations, state):
         provider = self.provider
-        provider_id = _safe_text(
+        provider_id = _redact_direct_identifier_text(
             getattr(provider, "provider_id", "not_configured"),
             100,
+            redact_names=True,
         ) or "not_configured"
-        provider_name = _safe_text(
+        provider_name = _redact_direct_identifier_text(
             getattr(
                 provider,
                 "provider_label",
                 type(provider).__name__ if provider else "미설정",
             ),
             200,
+            redact_names=True,
         ) or "미설정"
         provider_meta = {
             "id": provider_id,
@@ -2286,7 +3827,10 @@ class StrategyInterpreterAgent:
                     "status": "error",
                     "prompt": prompt,
                     "result": None,
-                    "error": f"AI provider invocation failed ({type(exc).__name__}).",
+                    "error": (
+                        "AI provider invocation failed "
+                        f"({_public_exception_type(exc)})."
+                    ),
                     "context_summary": context_summary,
                 },
                 "provider_context_evidence_ids": context_evidence_ids,
@@ -2408,8 +3952,22 @@ class ProviderOutputGuardAgent:
         violations = []
         if _contains_sensitive_key(result) or _contains_credential_literal(result):
             violations.append("sensitive_key")
-        if any(literal in lowered for literal in _sensitive_literals(observations)):
+        if (
+            _contains_direct_identifier_literal(result)
+            or any(literal in lowered for literal in _sensitive_literals(observations))
+            or (
+                PERSON_REFERENCE_CONTEXT_PATTERN.search(result_text)
+                and _possible_named_person_reference(result_text, observations)
+            )
+        ):
             violations.append("sensitive_literal")
+        if (
+            _contains_automated_hr_action_recommendation(result_text)
+            or _contains_structured_hr_action_recommendation(result)
+        ):
+            violations.append("automated_hr_action_recommendation")
+        if _contains_protected_characteristic_judgment(result_text):
+            violations.append("protected_characteristic_judgment")
         if _contains_unsupported_causal_assertion(result_text):
             violations.append("unsupported_causal_assertion")
         fabricated_person_reference = _possible_fabricated_person_reference(
@@ -2443,9 +4001,17 @@ class ProviderOutputGuardAgent:
         if unknown_ids:
             violations.append("unknown_evidence_citation")
 
+        unsupported_factual_claims = _uncited_factual_claims(result, known_ids)
+        if unsupported_factual_claims:
+            violations.append("uncited_factual_claim")
+
         contradictory_claims = []
         unsupported_numeric_claims = []
-        for line in _claim_text_segments(result):
+        for line in (
+            clause
+            for segment in _claim_text_segments(result)
+            for clause in (_claim_clauses(segment) or [segment])
+        ):
             line_citations = {
                 citation.casefold()
                 for citation in re.findall(
@@ -2509,6 +4075,7 @@ class ProviderOutputGuardAgent:
                     "malformed_evidence_ids": malformed_ids,
                     "contradictory_numeric_claims": contradictory_claims,
                     "unsupported_numeric_claims": unsupported_numeric_claims,
+                    "unsupported_factual_claims": unsupported_factual_claims,
                 },
             }
         return {
@@ -2522,6 +4089,7 @@ class ProviderOutputGuardAgent:
                 "malformed_evidence_ids": [],
                 "contradictory_numeric_claims": [],
                 "unsupported_numeric_claims": [],
+                "unsupported_factual_claims": [],
             },
         }
 
@@ -3158,12 +4726,12 @@ class WorkforceAgentOrchestrator:
                     agent, started = futures[future]
                     try:
                         state.update(future.result())
-                    except Exception as exc:
+                    except Exception:
                         traces.append(AgentTrace(
                             agent.name,
                             "error",
                             int((time.perf_counter() - started) * 1000),
-                            f"{type(exc).__name__}: agent execution failed",
+                            "agent execution failed",
                             agent.depends_on,
                         ))
                     else:
@@ -3348,12 +4916,12 @@ class WorkforceAgentOrchestrator:
         started = time.perf_counter()
         try:
             state.update(agent.run(observations, state))
-        except Exception as exc:
+        except Exception:
             traces.append(AgentTrace(
                 agent.name,
                 "error",
                 int((time.perf_counter() - started) * 1000),
-                f"{type(exc).__name__}: agent execution failed",
+                "agent execution failed",
                 agent.depends_on,
             ))
         else:

@@ -77,6 +77,13 @@ class ArtifactManifestTests(unittest.TestCase):
                 '{"build_path": "' + str(executable).replace("\\", "\\\\") + '"}',
                 encoding="utf-8",
             )
+            latest_smoke = session_dir / "smoke-final-candidate.json"
+            latest_smoke.write_text(
+                '{"build_path": "' + str(executable).replace("\\", "\\\\") + '"}',
+                encoding="utf-8",
+            )
+            os.utime(smoke, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(latest_smoke, ns=(2_000_000_000, 2_000_000_000))
             unrelated_smoke = session_dir / "packaged-runtime-smoke-20260830-2049.json"
             unrelated_smoke.write_text(
                 '{"build_path": "C:\\\\elsewhere\\\\other.exe"}',
@@ -97,7 +104,7 @@ class ArtifactManifestTests(unittest.TestCase):
                 dependency_audit,
                 sbom,
                 audit,
-                smoke,
+                latest_smoke,
             ),
         )
 

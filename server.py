@@ -22,7 +22,7 @@ from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunsplit
 from urllib.request import Request, urlopen
@@ -33,6 +33,7 @@ from claude_mcp_adapter import (
     UnavailableClaudeCodeMCPAdapter,
     create_claude_code_mcp_adapter,
 )
+from classroom_mode import build_classroom_payload
 from analysis_contract import AnalysisRequest, MAX_CORP_CODES
 from agent_orchestration import (
     ALLOWED_REQUEST_METRICS,
@@ -157,9 +158,18 @@ def _runtime_build_id(
     frozen: bool,
     executable: Path,
 ) -> str:
+    vercel_commit = str(environ.get("VERCEL_GIT_COMMIT_SHA", "")).strip().lower()
+    if environ.get("VERCEL") and re.fullmatch(r"[0-9a-f]{7,64}", vercel_commit):
+        # A deployment-scoped Vercel commit is the freshness identity.  An
+        # operator-supplied label must never hide which revision is serving.
+        return f"git-{vercel_commit[:12]}"
     configured = str(environ.get("DART_BUILD_ID", "")).strip()
     if configured and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}", configured):
         return configured
+    for variable in ("VERCEL_GIT_COMMIT_SHA", "GITHUB_SHA"):
+        commit_sha = str(environ.get(variable, "")).strip().lower()
+        if re.fullmatch(r"[0-9a-f]{7,64}", commit_sha):
+            return f"git-{commit_sha[:12]}"
     if not frozen:
         return "source"
     try:
@@ -277,6 +287,14 @@ OPEN_BROWSER_ON_START = str(RUNTIME_ENV.get("DART_OPEN_BROWSER", "true")).strip(
 STRICT_ORCHESTRATION_SCHEMA = str(
     RUNTIME_ENV.get("DART_STRICT_ORCHESTRATION_SCHEMA", "true")
 ).strip().lower() in {"1", "true", "yes", "on"}
+ALLOW_OPERATOR_AI_PROVIDER = str(
+    RUNTIME_ENV.get("DART_ALLOW_OPERATOR_AI_PROVIDER", "false")
+).strip().lower() in {"1", "true", "yes", "on"}
+OPERATOR_AI_TOKEN = str(RUNTIME_ENV.get("DART_OPERATOR_AI_TOKEN", "")).strip()
+
+
+def _valid_operator_ai_token(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9._~-]{32,512}", value))
 
 
 def _bounded_environment_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -306,9 +324,18 @@ MAX_DART_LIST_ROWS = 10_000
 MAX_PUBLIC_LABEL_CHARS = 500
 MAX_FINANCIAL_HISTORY_OBSERVATIONS = 48
 MAX_PEOPLE_HISTORY_OBSERVATIONS = 32
-DART_RETRY_ATTEMPTS = _bounded_environment_int("DART_RETRY_ATTEMPTS", 3, 1, 4)
+DART_RETRY_ATTEMPTS = _bounded_environment_int("DART_RETRY_ATTEMPTS", 3, 1, 3)
 DART_RETRY_BASE_DELAY_MS = _bounded_environment_int(
     "DART_RETRY_BASE_DELAY_MS", 250, 50, 2000
+)
+DART_REQUEST_TIMEOUT_SECONDS = _bounded_environment_int(
+    "DART_REQUEST_TIMEOUT_SECONDS", 10, 3, 10
+)
+DART_OUTBOUND_DEADLINE_SECONDS = _bounded_environment_int(
+    "DART_OUTBOUND_DEADLINE_SECONDS", 35, 10, 90
+)
+DART_OUTBOUND_ATTEMPT_BUDGET = _bounded_environment_int(
+    "DART_OUTBOUND_ATTEMPT_BUDGET", 48, 8, 96
 )
 DART_RESPONSE_CACHE = BoundedTTLCache(
     max_entries=DART_RESPONSE_CACHE_MAX_ENTRIES,
@@ -613,6 +640,81 @@ class DARTError(Exception):
     pass
 
 
+class MalformedContentLength(ValueError):
+    """A request length header that cannot be parsed without reflecting its value."""
+
+
+class DARTBudgetExceeded(DARTError):
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        message = (
+            "OpenDART 조회 제한 시간을 초과했습니다. 일부 결과만 표시합니다. "
+            "조회 기업 또는 연도 범위를 줄이고 다시 시도해 주세요."
+            if reason == "deadline"
+            else "OpenDART 요청 예산을 초과했습니다. 일부 결과만 표시합니다. "
+            "조회 기업 또는 연도 범위를 줄이고 다시 시도해 주세요."
+        )
+        super().__init__(message)
+
+
+class DARTRequestBudget:
+    """Thread-safe outbound attempt and wall-clock budget for one HTTP request."""
+
+    def __init__(
+        self,
+        *,
+        deadline_seconds: float = DART_OUTBOUND_DEADLINE_SECONDS,
+        attempt_limit: int = DART_OUTBOUND_ATTEMPT_BUDGET,
+        clock: Callable[[], float] | None = None,
+        sleeper: Callable[[float], None] | None = None,
+    ) -> None:
+        self.deadline_seconds = max(0.1, float(deadline_seconds))
+        self.attempt_limit = max(1, int(attempt_limit))
+        self._clock = clock or time.monotonic
+        self._sleeper = sleeper or time.sleep
+        self._deadline = self._clock() + self.deadline_seconds
+        self._attempts = 0
+        self._exhausted_reason: str | None = None
+        self._lock = threading.Lock()
+
+    def timeout_for_attempt(self, attempt_timeout: float) -> float:
+        """Claim one real network attempt and return its remaining-safe timeout."""
+
+        with self._lock:
+            remaining = self._deadline - self._clock()
+            if remaining <= 0.1:
+                self._exhausted_reason = "deadline"
+                raise DARTBudgetExceeded("deadline")
+            if self._attempts >= self.attempt_limit:
+                self._exhausted_reason = "attempt_limit"
+                raise DARTBudgetExceeded("attempt_limit")
+            self._attempts += 1
+            return min(float(attempt_timeout), remaining)
+
+    def sleep_before_retry(self, delay_seconds: float) -> None:
+        delay = max(0.0, float(delay_seconds))
+        with self._lock:
+            if self._deadline - self._clock() <= delay + 0.1:
+                self._exhausted_reason = "deadline"
+                raise DARTBudgetExceeded("deadline")
+        self._sleeper(delay)
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "attempts": self._attempts,
+                "attempt_limit": self.attempt_limit,
+                "deadline_seconds": self.deadline_seconds,
+                "remaining_seconds": max(0.0, self._deadline - self._clock()),
+                "exhausted": self._exhausted_reason is not None,
+                "exhausted_reason": self._exhausted_reason,
+            }
+
+
+def new_dart_request_budget() -> DARTRequestBudget:
+    return DARTRequestBudget()
+
+
 def _reject_nonfinite_json(value: str) -> None:
     raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
@@ -630,7 +732,13 @@ def user_openai_provider(api_key: str) -> OpenAIResponsesProvider:
     return replace(OPENAI_PROVIDER, api_key=key)
 
 
-def dart_request(endpoint: str, params: dict[str, str], binary: bool = False) -> Any:
+def dart_request(
+    endpoint: str,
+    params: dict[str, str],
+    binary: bool = False,
+    *,
+    budget: DARTRequestBudget | None = None,
+) -> Any:
     if not API_KEY:
         raise DARTError("OPENDART_API_KEY가 .env에 설정되지 않았습니다.")
     cache_key = None
@@ -643,8 +751,20 @@ def dart_request(endpoint: str, params: dict[str, str], binary: bool = False) ->
             found, cached_result = DART_RESPONSE_CACHE.get(cache_key)
             if found:
                 return cached_result
-            return _perform_dart_request(endpoint, params, binary=False, cache_key=cache_key)
-    return _perform_dart_request(endpoint, params, binary=binary, cache_key=None)
+            return _perform_dart_request(
+                endpoint,
+                params,
+                binary=False,
+                cache_key=cache_key,
+                budget=budget,
+            )
+    return _perform_dart_request(
+        endpoint,
+        params,
+        binary=binary,
+        cache_key=None,
+        budget=budget,
+    )
 
 
 def _perform_dart_request(
@@ -653,6 +773,7 @@ def _perform_dart_request(
     *,
     binary: bool,
     cache_key: str | None,
+    budget: DARTRequestBudget | None,
 ) -> Any:
     query = {**params, "crtfc_key": API_KEY}
     url = f"{DART_BASE}/{endpoint}?{urlencode(query)}"
@@ -661,7 +782,12 @@ def _perform_dart_request(
     last_error: Exception | None = None
     for attempt in range(DART_RETRY_ATTEMPTS):
         try:
-            with urlopen(request, timeout=40) as response:
+            attempt_timeout = (
+                budget.timeout_for_attempt(DART_REQUEST_TIMEOUT_SECONDS)
+                if budget is not None
+                else DART_REQUEST_TIMEOUT_SECONDS
+            )
+            with urlopen(request, timeout=attempt_timeout) as response:
                 payload = response.read(MAX_DART_RESPONSE_BYTES + 1)
                 if len(payload) > MAX_DART_RESPONSE_BYTES:
                     raise DARTError("OpenDART 응답이 허용된 크기를 초과했습니다.")
@@ -680,7 +806,11 @@ def _perform_dart_request(
             last_error = exc
             if attempt + 1 >= DART_RETRY_ATTEMPTS:
                 raise DARTError("OpenDART 연결에 일시적인 문제가 발생했습니다.") from exc
-        time.sleep((DART_RETRY_BASE_DELAY_MS / 1000) * (2 ** attempt))
+        retry_delay = (DART_RETRY_BASE_DELAY_MS / 1000) * (2 ** attempt)
+        if budget is not None:
+            budget.sleep_before_retry(retry_delay)
+        else:
+            time.sleep(retry_delay)
     if payload is None:
         raise DARTError("OpenDART 연결에 실패했습니다.") from last_error
 
@@ -710,6 +840,16 @@ def _perform_dart_request(
     if cache_key:
         DART_RESPONSE_CACHE.set(cache_key, result, weight=len(payload))
     return result
+
+
+def _budgeted_dart_request(
+    endpoint: str,
+    params: dict[str, str],
+    budget: DARTRequestBudget | None,
+) -> Any:
+    if budget is None:
+        return dart_request(endpoint, params)
+    return dart_request(endpoint, params, budget=budget)
 
 
 def load_corp_codes() -> list[dict[str, str]]:
@@ -979,12 +1119,19 @@ def ratio(
     return value if math.isfinite(value) else None
 
 
-def fetch_company_financials(company: dict[str, str], year: str, report_code: str) -> dict[str, Any]:
+def fetch_company_financials(
+    company: dict[str, str],
+    year: str,
+    report_code: str,
+    *,
+    budget: DARTRequestBudget | None = None,
+) -> dict[str, Any]:
     base = {"company": company, "year": year, "report_code": report_code}
     try:
-        result = dart_request(
+        result = _budgeted_dart_request(
             "fnlttSinglAcnt.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
+            budget,
         )
         rows = _dart_list_rows(result, "financial_status")
         if not rows:
@@ -1117,32 +1264,41 @@ def _employee_summary_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, A
     return [dict(row) for row in selected], mode
 
 
-def fetch_company_people(company: dict[str, str], year: str, report_code: str) -> dict[str, Any]:
+def fetch_company_people(
+    company: dict[str, str],
+    year: str,
+    report_code: str,
+    *,
+    budget: DARTRequestBudget | None = None,
+) -> dict[str, Any]:
     base = {"company": company, "year": year, "report_code": report_code}
     employee_rows: list[dict[str, Any]] = []
     executive_rows: list[dict[str, Any]] = []
     unregistered_pay_rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     try:
-        employee_payload = dart_request(
+        employee_payload = _budgeted_dart_request(
             "empSttus.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
+            budget,
         )
         employee_rows = _dart_list_rows(employee_payload, "employee_status")
     except DARTError as exc:
         errors.append({"source": "employee_status", "message": str(exc)})
     try:
-        executive_payload = dart_request(
+        executive_payload = _budgeted_dart_request(
             "exctvSttus.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
+            budget,
         )
         executive_rows = _dart_list_rows(executive_payload, "executive_status")
     except DARTError as exc:
         errors.append({"source": "executive_status", "message": str(exc)})
     try:
-        unregistered_pay_payload = dart_request(
+        unregistered_pay_payload = _budgeted_dart_request(
             "unrstExctvMendngSttus.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
+            budget,
         )
         unregistered_pay_rows = _dart_list_rows(
             unregistered_pay_payload,
@@ -1300,12 +1456,35 @@ def _people_pipeline_failure(
     }
 
 
-def fetch_financial_results(codes: list[str], year: str, report_code: str) -> list[dict[str, Any]]:
+def _submit_with_budget(
+    executor: ThreadPoolExecutor,
+    function: Callable[..., Any],
+    *args: Any,
+    budget: DARTRequestBudget | None,
+) -> Any:
+    if budget is None:
+        return executor.submit(function, *args)
+    return executor.submit(function, *args, budget=budget)
+
+
+def fetch_financial_results(
+    codes: list[str],
+    year: str,
+    report_code: str,
+    budget: DARTRequestBudget | None = None,
+) -> list[dict[str, Any]]:
     selected = selected_companies(codes)
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(MAX_COMPANIES, len(selected))) as executor:
         futures = {
-            executor.submit(fetch_company_financials, company, year, report_code): company
+            _submit_with_budget(
+                executor,
+                fetch_company_financials,
+                company,
+                year,
+                report_code,
+                budget=budget,
+            ): company
             for company in selected
         }
         for future in as_completed(futures):
@@ -1318,7 +1497,13 @@ def fetch_financial_results(codes: list[str], year: str, report_code: str) -> li
     return results
 
 
-def fetch_history_results(codes: list[str], from_year: str, to_year: str, report_code: str) -> list[dict[str, Any]]:
+def fetch_history_results(
+    codes: list[str],
+    from_year: str,
+    to_year: str,
+    report_code: str,
+    budget: DARTRequestBudget | None = None,
+) -> list[dict[str, Any]]:
     enforce_history_observation_budget(
         codes,
         int(from_year),
@@ -1330,7 +1515,14 @@ def fetch_history_results(codes: list[str], from_year: str, to_year: str, report
     by_code: dict[str, dict[str, Any]] = {company["corp_code"]: {"company": company, "years": []} for company in selected}
     with ThreadPoolExecutor(max_workers=min(12, len(jobs))) as executor:
         futures = {
-            executor.submit(fetch_company_financials, company, year, report_code): (company, year)
+            _submit_with_budget(
+                executor,
+                fetch_company_financials,
+                company,
+                year,
+                report_code,
+                budget=budget,
+            ): (company, year)
             for company, year in jobs
         }
         for future in as_completed(futures):
@@ -1346,11 +1538,23 @@ def fetch_history_results(codes: list[str], from_year: str, to_year: str, report
     return history
 
 
-def fetch_people_results(codes: list[str], year: str, report_code: str) -> list[dict[str, Any]]:
+def fetch_people_results(
+    codes: list[str],
+    year: str,
+    report_code: str,
+    budget: DARTRequestBudget | None = None,
+) -> list[dict[str, Any]]:
     selected = selected_companies(codes)
     with ThreadPoolExecutor(max_workers=min(MAX_COMPANIES, len(selected))) as executor:
         futures = {
-            executor.submit(fetch_company_people, company, year, report_code): company
+            _submit_with_budget(
+                executor,
+                fetch_company_people,
+                company,
+                year,
+                report_code,
+                budget=budget,
+            ): company
             for company in selected
         }
         results = []
@@ -1364,7 +1568,13 @@ def fetch_people_results(codes: list[str], year: str, report_code: str) -> list[
     return [_public_people_result(item) for item in results]
 
 
-def fetch_people_history_results(codes: list[str], from_year: str, to_year: str, report_code: str) -> list[dict[str, Any]]:
+def fetch_people_history_results(
+    codes: list[str],
+    from_year: str,
+    to_year: str,
+    report_code: str,
+    budget: DARTRequestBudget | None = None,
+) -> list[dict[str, Any]]:
     enforce_history_observation_budget(
         codes,
         int(from_year),
@@ -1376,7 +1586,14 @@ def fetch_people_history_results(codes: list[str], from_year: str, to_year: str,
     by_code: dict[str, dict[str, Any]] = {company["corp_code"]: {"company": company, "years": []} for company in selected}
     with ThreadPoolExecutor(max_workers=min(12, len(jobs))) as executor:
         futures = {
-            executor.submit(fetch_company_people, company, year, report_code): (company, year)
+            _submit_with_budget(
+                executor,
+                fetch_company_people,
+                company,
+                year,
+                report_code,
+                budget=budget,
+            ): (company, year)
             for company, year in jobs
         }
         for future in as_completed(futures):
@@ -1404,7 +1621,12 @@ def _public_people_result(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def fetch_workforce_observations(codes: list[str], year: str, report_code: str) -> list[WorkforceObservation]:
+def fetch_workforce_observations(
+    codes: list[str],
+    year: str,
+    report_code: str,
+    budget: DARTRequestBudget | None = None,
+) -> list[WorkforceObservation]:
     """Fetch DART rows once and convert them into orchestration inputs."""
 
     selected = selected_companies(codes)
@@ -1412,11 +1634,25 @@ def fetch_workforce_observations(codes: list[str], year: str, report_code: str) 
     financials_by_code: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=min(16, max(1, len(selected) * 2))) as executor:
         people_futures = {
-            executor.submit(fetch_company_people, company, year, report_code): company
+            _submit_with_budget(
+                executor,
+                fetch_company_people,
+                company,
+                year,
+                report_code,
+                budget=budget,
+            ): company
             for company in selected
         }
         financial_futures = {
-            executor.submit(fetch_company_financials, company, year, report_code): company
+            _submit_with_budget(
+                executor,
+                fetch_company_financials,
+                company,
+                year,
+                report_code,
+                budget=budget,
+            ): company
             for company in selected
         }
         for future in as_completed(people_futures):
@@ -1488,15 +1724,32 @@ def _executive_only_result(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def fetch_executive_results(codes: list[str], year: str, report_code: str) -> list[dict[str, Any]]:
+def fetch_executive_results(
+    codes: list[str],
+    year: str,
+    report_code: str,
+    budget: DARTRequestBudget | None = None,
+) -> list[dict[str, Any]]:
     return [
         _executive_only_result(item)
-        for item in fetch_people_results(codes, year, report_code)
+        for item in fetch_people_results(codes, year, report_code, budget)
     ]
 
 
-def fetch_executive_history_results(codes: list[str], from_year: str, to_year: str, report_code: str) -> list[dict[str, Any]]:
-    history = fetch_people_history_results(codes, from_year, to_year, report_code)
+def fetch_executive_history_results(
+    codes: list[str],
+    from_year: str,
+    to_year: str,
+    report_code: str,
+    budget: DARTRequestBudget | None = None,
+) -> list[dict[str, Any]]:
+    history = fetch_people_history_results(
+        codes,
+        from_year,
+        to_year,
+        report_code,
+        budget,
+    )
     return [
         {
             "company": item.get("company"),
@@ -1550,6 +1803,17 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Ignore expected client disconnects without hiding server failures."""
+
+        error = sys.exc_info()[1]
+        if isinstance(
+            error,
+            (BrokenPipeError, ConnectionAbortedError, ConnectionResetError),
+        ):
+            return
+        super().handle_error(request, client_address)
 
 
 def _application_identity(server: Any | None = None) -> dict[str, Any]:
@@ -1804,7 +2068,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
             raise ValueError("요청 Content-Type은 application/json이어야 합니다.")
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError) as exc:
+            raise MalformedContentLength(
+                "Content-Length 헤더 형식이 올바르지 않습니다."
+            ) from exc
         if length <= 0 or length > 2_000_000:
             raise ValueError("요청 본문이 비어 있거나 너무 큽니다.")
         raw = self.rfile.read(length)
@@ -1819,6 +2088,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def request_openai_provider(self) -> OpenAIResponsesProvider | None:
         api_key = self.headers.get("X-OpenAI-API-Key", "")
         return user_openai_provider(api_key) if api_key.strip() else None
+
+    def request_operator_ai_provider(self) -> Any | None:
+        """Return the operator-funded provider only across an explicit auth boundary."""
+
+        if (
+            not ALLOW_OPERATOR_AI_PROVIDER
+            or not _valid_operator_ai_token(OPERATOR_AI_TOKEN)
+            or not getattr(WORKFORCE_AI_PROVIDER, "configured", False)
+        ):
+            return None
+        supplied = self.headers.get("X-DART-Operator-Token", "").strip()
+        if not _valid_operator_ai_token(supplied):
+            return None
+        return (
+            WORKFORCE_AI_PROVIDER
+            if secrets.compare_digest(supplied, OPERATOR_AI_TOKEN)
+            else None
+        )
 
     def do_POST(self) -> None:
         self._request_id = secrets.token_hex(8)
@@ -1880,13 +2167,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "조회 연도가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                 return
             request = replace(request, year=year)
-            observations = fetch_workforce_observations(
-                list(request.corp_codes), year, request.report_code
-            )
             provider = (
                 None
                 if parsed.path == "/api/analysis/context"
-                else self.request_openai_provider() or WORKFORCE_AI_PROVIDER
+                else self.request_openai_provider() or self.request_operator_ai_provider()
+            )
+            if provider is not None and payload.get("provider_data_consent") is not True:
+                self.send_json(
+                    {
+                        "error": (
+                            "질문과 공개 기업 집계의 AI provider 전송 안내에 "
+                            "동의한 뒤 다시 실행해 주세요."
+                        ),
+                        "error_code": "provider_data_consent_required",
+                    },
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            budget = new_dart_request_budget()
+            observations = fetch_workforce_observations(
+                list(request.corp_codes),
+                year,
+                request.report_code,
+                budget,
             )
             response = WorkforceAgentOrchestrator(provider=provider).run(
                 observations,
@@ -1901,15 +2204,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "max": MAX_COMPANIES,
             }
             response["source"] = "OpenDART"
+            response["evidence"]["reference_mode"] = "opendart_receipt"
+            response["evidence"]["external_source_links"] = True
+            response["evidence"]["source_notice"] = (
+                "OpenDART 공시 접수번호로 검증할 수 있는 원문 링크입니다."
+            )
             validate_orchestration_response(response)
             self.record_orchestration_telemetry(response)
             self.send_json(response)
+        except MalformedContentLength as exc:
+            self.log_internal_error(exc)
+            self.send_json(
+                {"error": "Content-Length 헤더 형식이 올바르지 않습니다."},
+                HTTPStatus.BAD_REQUEST,
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except DARTError as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            self.log_internal_error(exc)
+            self.send_json(
+                {"error": "OpenDART API에 연결하지 못했습니다."},
+                HTTPStatus.BAD_GATEWAY,
+            )
         except OpenAIResponsesError as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            self.log_internal_error(exc)
+            self.send_json(
+                {"error": "OpenAI API에 연결하지 못했습니다."},
+                HTTPStatus.BAD_GATEWAY,
+            )
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
         except Exception as exc:
             self.log_internal_error(exc)
             self.send_json({"error": "서버 처리 중 오류가 발생했습니다."}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -1936,9 +2260,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         not STRICT_ORCHESTRATION_SCHEMA
                         or _ORCHESTRATION_VALIDATOR is not None
                     ),
+                    "classroom_sample": {
+                        "available": True,
+                        "endpoint": "/api/classroom/bootstrap",
+                        "network_requests": 0,
+                    },
                     "ai_provider_configured": bool(getattr(ACTIVE_AI_PROVIDER, "configured", False)),
                     "ai_provider": getattr(ACTIVE_AI_PROVIDER, "provider_id", "not_configured"),
                     "ai_provider_name": getattr(ACTIVE_AI_PROVIDER, "provider_label", type(ACTIVE_AI_PROVIDER).__name__),
+                    "operator_ai_access": {
+                        "enabled": ALLOW_OPERATOR_AI_PROVIDER,
+                        "authentication_required": True,
+                        "ready": bool(
+                            ALLOW_OPERATOR_AI_PROVIDER
+                            and _valid_operator_ai_token(OPERATOR_AI_TOKEN)
+                            and getattr(WORKFORCE_AI_PROVIDER, "configured", False)
+                        ),
+                    },
                     "runtime": {
                         "dart_cache": {
                             **DART_RESPONSE_CACHE.stats(),
@@ -1952,6 +2290,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "orchestration_telemetry": {
                             **ORCHESTRATION_TELEMETRY.stats(),
                             "scope": "per_process",
+                        },
+                        "outbound_deadline": {
+                            "attempt_timeout_seconds": DART_REQUEST_TIMEOUT_SECONDS,
+                            "retry_attempts": DART_RETRY_ATTEMPTS,
+                            "shared_deadline_seconds": DART_OUTBOUND_DEADLINE_SECONDS,
+                            "max_attempts_per_request": DART_OUTBOUND_ATTEMPT_BUDGET,
+                            "cache_hits_consume_attempts": False,
+                            "people_endpoints_per_company": 3,
                         },
                     },
                 })
@@ -1974,7 +2320,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "decision_dimensions": DECISION_DIMENSION_CATALOG,
                     "views": sorted(ALLOWED_REQUEST_VIEWS),
                     "source": "OpenDART",
+                    "classroom_sample_available": True,
                 })
+                return
+            if parsed.path == "/api/classroom/bootstrap":
+                payload = build_classroom_payload()
+                validate_orchestration_response(payload["orchestration"])
+                self.record_orchestration_telemetry(payload["orchestration"])
+                self.send_json(payload)
                 return
             if parsed.path == "/api/companies":
                 query = parse_qs(parsed.query).get("q", [""])[0]
@@ -2006,7 +2359,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
-                history = fetch_history_results(codes, from_year, to_year, report_code)
+                budget = new_dart_request_budget()
+                history = fetch_history_results(
+                    codes,
+                    from_year,
+                    to_year,
+                    report_code,
+                    budget,
+                )
                 self.send_json({"from_year": from_year, "to_year": to_year, "report_code": report_code, "results": history})
                 return
             if parsed.path == "/api/workforce/orchestration":
@@ -2024,10 +2384,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "보고서 코드가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
-                observations = fetch_workforce_observations(codes, year, report_code)
+                budget = new_dart_request_budget()
+                observations = fetch_workforce_observations(
+                    codes,
+                    year,
+                    report_code,
+                    budget,
+                )
                 result = WorkforceAgentOrchestrator(provider=None).run(observations)
                 result["selection"] = {"count": len(codes), "max": MAX_COMPANIES}
                 result["source"] = "OpenDART"
+                result["evidence"]["reference_mode"] = "opendart_receipt"
+                result["evidence"]["external_source_links"] = True
+                result["evidence"]["source_notice"] = (
+                    "OpenDART 공시 접수번호로 검증할 수 있는 원문 링크입니다."
+                )
                 validate_orchestration_response(result)
                 self.record_orchestration_telemetry(result)
                 self.send_json(result)
@@ -2058,11 +2429,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "보고서 코드가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
+                budget = new_dart_request_budget()
                 self.send_json({
                     "from_year": from_year,
                     "to_year": to_year,
                     "report_code": report_code,
-                    "results": fetch_executive_history_results(codes, from_year, to_year, report_code),
+                    "results": fetch_executive_history_results(
+                        codes,
+                        from_year,
+                        to_year,
+                        report_code,
+                        budget,
+                    ),
                 })
                 return
             if parsed.path == "/api/executives":
@@ -2077,10 +2455,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"20\d{2}", year) or report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "연도 또는 보고서 코드가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
+                budget = new_dart_request_budget()
                 self.send_json({
                     "year": year,
                     "report_code": report_code,
-                    "results": fetch_executive_results(codes, year, report_code),
+                    "results": fetch_executive_results(
+                        codes,
+                        year,
+                        report_code,
+                        budget,
+                    ),
                 })
                 return
             if parsed.path == "/api/people/history":
@@ -2109,11 +2493,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
+                budget = new_dart_request_budget()
                 self.send_json({
                     "from_year": from_year,
                     "to_year": to_year,
                     "report_code": report_code,
-                    "results": fetch_people_history_results(codes, from_year, to_year, report_code),
+                    "results": fetch_people_history_results(
+                        codes,
+                        from_year,
+                        to_year,
+                        report_code,
+                        budget,
+                    ),
                 })
                 return
             if parsed.path == "/api/people":
@@ -2128,7 +2519,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"20\d{2}", year) or report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "연도 또는 보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
-                self.send_json({"year": year, "report_code": report_code, "results": fetch_people_results(codes, year, report_code)})
+                budget = new_dart_request_budget()
+                self.send_json({
+                    "year": year,
+                    "report_code": report_code,
+                    "results": fetch_people_results(
+                        codes,
+                        year,
+                        report_code,
+                        budget,
+                    ),
+                })
                 return
             if parsed.path == "/api/financials":
                 params = parse_qs(parsed.query)
@@ -2142,7 +2543,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"20\d{2}", year) or report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "연도 또는 보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
-                results = fetch_financial_results(codes, year, report_code)
+                budget = new_dart_request_budget()
+                results = fetch_financial_results(
+                    codes,
+                    year,
+                    report_code,
+                    budget,
+                )
                 self.send_json({"year": year, "report_code": report_code, "results": results})
                 return
             if parsed.path == "/" or parsed.path == "/index.html":
@@ -2154,9 +2561,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"error": "페이지를 찾을 수 없습니다."}, HTTPStatus.NOT_FOUND)
         except DARTError as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            self.log_internal_error(exc)
+            self.send_json(
+                {"error": "OpenDART API에 연결하지 못했습니다."},
+                HTTPStatus.BAD_GATEWAY,
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
         except Exception as exc:
             self.log_internal_error(exc)
             self.send_json({"error": "서버 처리 중 오류가 발생했습니다."}, HTTPStatus.INTERNAL_SERVER_ERROR)

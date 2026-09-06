@@ -14,6 +14,65 @@ class FrontendVisualContractTests(unittest.TestCase):
         cls.index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         cls.app = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        cls.failure_recovery_qa = (
+            ROOT / "tools" / "qa_failure_recovery.js"
+        ).read_text(encoding="utf-8")
+
+    def test_failure_recovery_browser_qa_contract(self) -> None:
+        for marker in (
+            'page.route("**/api/**"',
+            'delay === 45_000 ? deadlineMs : delay',
+            'scenario.mode = "timeout"',
+            'scenario.mode = "request-id-error"',
+            'scenario.mode = "stale-delay"',
+            '"comparison-timeout.png"',
+            '"request-id-error.png"',
+            '"selection-aborted.png"',
+            '"ai-policy-fallback.png"',
+            'forbiddenResponseText',
+            'window.__failureRecoveryQa.abortedRequests',
+            'window.__failureRecoveryQa.clipboardWrites',
+            'healthClassroomRaceScenario',
+            'stalePromptScenario',
+            'aiPolicyFallbackScenario',
+            'unsafeProviderDraft',
+            'scenario.consoleErrors.length === 0',
+            'scenario.pageErrors.length === 0',
+            'scenario.externalRequests.length === 0',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.failure_recovery_qa)
+
+    def test_health_race_and_prompt_copy_are_context_bound(self) -> None:
+        for marker in (
+            'healthError: ""',
+            'function renderHealthFailure()',
+            'if (state.classroomMode) return;',
+            'state.healthError = error.message || "서버 식별 실패";',
+            'if (state.healthError) renderHealthFailure();',
+            'promptRequestToken: 0',
+            'promptAbortController: null',
+            'function cancelPromptRequest()',
+            'state.promptAbortController?.abort();',
+            'signal: abortController.signal',
+            'requestToken === state.promptRequestToken',
+            'requestKey === dataSelectionKey(state.selected',
+            'if (!requestIsCurrent()) return;',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.app)
+
+        selection_start = self.app.index("function invalidateSelectionRequests()")
+        selection_end = self.app.index("function invalidatePeriodRequests", selection_start)
+        period_end = self.app.index("function conversationQuestion", selection_end)
+        self.assertIn("cancelPromptRequest();", self.app[selection_start:selection_end])
+        self.assertIn("cancelPromptRequest();", self.app[selection_end:period_end])
+
+        fallback_start = self.app.index("function buildValidatedFallback(payload)")
+        fallback_end = self.app.index("function renderProviderEvidenceText", fallback_start)
+        fallback = self.app[fallback_start:fallback_end]
+        self.assertIn("boundedRequestId(payload?.request_id)", fallback)
+        self.assertIn("요청 ID:", fallback)
 
     def test_strategy_visual_layers_remain_wired(self) -> None:
         required_app_markers = (
@@ -180,6 +239,9 @@ class FrontendVisualContractTests(unittest.TestCase):
             "서버가 검증한 OpenDART 근거만 표시합니다.",
             "인과관계나 개인의 성과·채용·평가 판단을 뜻하지 않습니다.",
             "guardedFallback: true",
+            'uncited_factual_claim: "근거 ID 없는 사실 주장"',
+            'automated_hr_action_recommendation: "자동 인사조치 권고"',
+            'protected_characteristic_judgment: "보호 특성에 근거한 개인 판단"',
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.app)
@@ -290,6 +352,169 @@ class FrontendVisualContractTests(unittest.TestCase):
         self.assertIn('tabindex="-1"', self.index)
         self.assertIn('role="tabpanel"', self.index)
 
+    def test_all_api_requests_have_deadlines_abort_and_request_ids(self) -> None:
+        for marker in (
+            "const API_REQUEST_TIMEOUT_MS = 45_000;",
+            "async function fetchJsonWithDeadline",
+            "new AbortController()",
+            'response.headers.get("X-Request-ID")',
+            "payload?.request_id",
+            'kind: "timeout"',
+            'kind: "aborted"',
+            "요청 시간이 초과되었습니다.",
+            "요청이 취소되었습니다.",
+            "잠시 후 다시 시도",
+            "요청 ID",
+            'fetchJsonWithDeadline("/api/analysis"',
+            'fetchJsonWithDeadline("/api/analysis/context"',
+            'fetchJsonWithDeadline("/api/health")',
+            'fetchJsonWithDeadline("/api/classroom/bootstrap"',
+            "/api/companies?q=",
+            "/api/financials?",
+            "/api/financials/history?",
+            "/api/people?",
+            "/api/people/history?",
+            "/api/workforce/orchestration?",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.app)
+
+        # All network paths must pass through the one bounded fetch primitive.
+        self.assertEqual(self.app.count("fetch("), 1)
+        self.assertEqual(self.app.count("API_REQUEST_TIMEOUT_MS"), 2)
+
+        selection_start = self.app.index("function invalidateSelectionRequests()")
+        selection_end = self.app.index("function invalidatePeriodRequests", selection_start)
+        selection = self.app[selection_start:selection_end]
+        period_start = selection_end
+        period_end = self.app.index("function conversationQuestion", period_start)
+        period = self.app[period_start:period_end]
+        for function_body in (selection, period):
+            self.assertIn("cancelCompareRequest();", function_body)
+            self.assertIn("cancelStrategyRequest();", function_body)
+
+        compare_start = self.app.index("async function compare()")
+        compare_end = self.app.index("function buildPeopleContext()", compare_start)
+        compare = self.app[compare_start:compare_end]
+        self.assertIn("cancelCompareRequest();", compare)
+        self.assertIn("cancelStrategyRequest();", compare)
+        self.assertIn("state.compareAbortController = abortController", compare)
+        self.assertIn("abortController.signal", compare)
+
+        strategy_start = self.app.index("async function loadStrategyData()")
+        strategy_end = compare_start
+        strategy = self.app[strategy_start:strategy_end]
+        self.assertIn("cancelStrategyRequest();", strategy)
+        self.assertIn("state.strategyAbortController = abortController", strategy)
+        self.assertIn("abortController.signal", strategy)
+
+    def test_classroom_sample_is_atomic_offline_and_explicitly_synthetic(self) -> None:
+        for marker in (
+            'id="loadClassroomButton"',
+            'id="sampleBanner"',
+            'id="exitClassroomButton"',
+            'id="dataSourceLabel"',
+            'id="aiTransferConsent"',
+            'id="disconnectAiButton"',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.index)
+
+        for marker in (
+            "function normalizeClassroomPayload",
+            "sample.network_requests === 0",
+            "sample.contains_real_company_data === false",
+            "sample.contains_personal_data === false",
+            "Object.assign(state, snapshot);",
+            "results: payload.results",
+            "previous: payload.previous",
+            "history: payload.history",
+            "people: payload.people",
+            "peopleHistory: payload.people_history",
+            "orchestration: payload.orchestration",
+            '"합성 fixture · 원문 링크 없음" : "OpenDART 원문"',
+            "SAMPLE — SYNTHETIC DATA",
+            "합성 fixture 기반 결정론적 브리핑",
+            "외부 AI가 생성한 답변이 아닙니다.",
+            'label: "결정론적 브리핑"',
+            "deterministicFixture: true",
+            'state.classroomMode ? ["데이터 구분"] : []',
+            "classroom-synthetic-${state.year",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.app)
+
+        official_start = self.app.index("function officialEvidenceUrl")
+        official_end = self.app.index("function evidenceSourceUrl", official_start)
+        self.assertIn('if (state.classroomMode) return "";', self.app[official_start:official_end])
+        evidence_end = self.app.index("function renderEvidenceText", official_end)
+        self.assertIn('if (state.classroomMode) return "";', self.app[official_end:evidence_end])
+
+        strategy_start = self.app.index("async function loadStrategyData()")
+        strategy_end = self.app.index("async function compare()", strategy_start)
+        strategy = self.app[strategy_start:strategy_end]
+        self.assertLess(
+            strategy.index("if (state.classroomMode)"),
+            strategy.index("requestPeopleHistory("),
+        )
+
+        compare_start = strategy_end
+        compare_end = self.app.index("function buildPeopleContext()", compare_start)
+        compare = self.app[compare_start:compare_end]
+        self.assertLess(
+            compare.index("if (state.classroomMode)"),
+            compare.index("requestAll("),
+        )
+
+        ai_start = self.app.index("async function runAiAnalysis()")
+        ai_end = self.app.index("async function copyPrompt()", ai_start)
+        ai = self.app[ai_start:ai_end]
+        self.assertLess(
+            ai.index("if (state.classroomMode)"),
+            ai.index('fetchJsonWithDeadline("/api/analysis"'),
+        )
+        self.assertLess(ai.index("if (state.classroomMode)"), ai.index("const inputKey"))
+        self.assertIn("if (!consent.checked)", ai)
+        self.assertIn("provider_data_consent: true", ai)
+        self.assertLess(ai.index("if (!consent.checked)"), ai.index('fetchJsonWithDeadline("/api/analysis"'))
+        self.assertIn('providerStatus === "rejected"', ai)
+
+        disconnect_start = self.app.index("function disconnectAiConnection()")
+        disconnect_end = self.app.index("function dataSelectionKey", disconnect_start)
+        disconnect = self.app[disconnect_start:disconnect_end]
+        for marker in (
+            'state.openAiKey = ""',
+            "state.openAiConnected = false",
+            'state.openAiProviderName = ""',
+            "state.aiMessages = []",
+            'keyInput.value = ""',
+            '$("#aiTransferConsent").checked = false',
+        ):
+            with self.subTest(disconnect_marker=marker):
+                self.assertIn(marker, disconnect)
+
+        exit_start = self.app.index("function exitClassroomMode()")
+        exit_end = self.app.index("function resetAiConversationForContextChange", exit_start)
+        exit_function = self.app[exit_start:exit_end]
+        for marker in (
+            "cancelClassroomRequest();",
+            "cancelSearchRequest();",
+            "cancelCompareRequest();",
+            "cancelStrategyRequest();",
+            "cancelAiRequest();",
+            "classroomMode: false",
+            "classroomSample: null",
+            "selected: []",
+            "results: []",
+            "previous: []",
+            "history: []",
+            "people: []",
+            "peopleHistory: []",
+            "orchestration: null",
+        ):
+            with self.subTest(exit_marker=marker):
+                self.assertIn(marker, exit_function)
+
     def test_search_and_interpretation_boundaries_remain_accessible(self) -> None:
         for marker in (
             'role="combobox"',
@@ -317,6 +542,41 @@ class FrontendVisualContractTests(unittest.TestCase):
                 self.assertIn(marker, self.app)
         for marker in (".result-item.active", ".comparison-boundary", ".strategy-load-notice"):
             with self.subTest(marker=marker):
+                self.assertIn(marker, self.styles)
+
+    def test_classroom_mode_keyboard_mobile_and_screen_reader_contract(self) -> None:
+        for marker in (
+            'aria-describedby="classroomButtonDescription"',
+            'id="classroomButtonDescription"',
+            'id="aiTransferConsent" type="checkbox" aria-describedby="aiTransferBoundary"',
+            'id="aiTransferBoundary" role="status" aria-live="polite" aria-atomic="true"',
+            'id="sampleBanner" role="region" aria-labelledby="sampleModeTitle" aria-describedby="sampleModeBoundary" tabindex="-1"',
+            'id="sampleModeBoundary" role="status" aria-live="polite" aria-atomic="true"',
+        ):
+            with self.subTest(html_marker=marker):
+                self.assertIn(marker, self.index)
+
+        for marker in (
+            "SAMPLE_AI_TRANSFER_NOTICE",
+            "합성 모드에서는 외부 AI 제공자를 사용하지 않으며 질문과 데이터가 외부로 전송되지 않습니다.",
+            'consent.setAttribute("aria-disabled", String(locked))',
+            'control.setAttribute("aria-describedby", "sampleModeBoundary")',
+            'enabled ? "apiConnectHelp sampleModeBoundary" : "apiConnectHelp"',
+            '$("#sampleBanner").focus()',
+            '$("#loadClassroomButton").focus()',
+        ):
+            with self.subTest(app_marker=marker):
+                self.assertIn(marker, self.app)
+
+        for marker in (
+            'button:disabled{cursor:not-allowed;opacity:.72}',
+            'button[aria-busy="true"]:disabled{cursor:wait}',
+            'button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--teal);outline-offset:3px}',
+            '.question-presets button:hover,.question-presets button:focus-visible{border-color:var(--teal);color:var(--teal-dark)}',
+            '@media(max-width:700px){.sample-banner{display:grid;grid-template-columns:minmax(0,1fr)',
+            '.sample-banner button{width:100%;min-height:44px',
+        ):
+            with self.subTest(style_marker=marker):
                 self.assertIn(marker, self.styles)
 
     def test_text_color_tokens_meet_wcag_aa_contrast(self) -> None:
@@ -352,6 +612,7 @@ class FrontendVisualContractTests(unittest.TestCase):
             ("--faint", "--card"),
             ("--faint", "--paper"),
             ("--teal", "--card"),
+            ("--teal-dark", "--paper"),
             ("--coral", "--card"),
             ("--gold", "--card"),
         )
@@ -373,6 +634,12 @@ class FrontendVisualContractTests(unittest.TestCase):
                         contrast(strategy[foreground], strategy[background]),
                         4.5,
                     )
+        for theme_name, foreground, background in (
+            ("sample-light", "#63430a", "#fff4d6"),
+            ("sample-dark", "#f4d58a", "#33270f"),
+        ):
+            with self.subTest(theme=theme_name, pair=(foreground, background)):
+                self.assertGreaterEqual(contrast(foreground, background), 4.5)
 
 
 if __name__ == "__main__":

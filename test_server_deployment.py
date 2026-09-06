@@ -9,7 +9,9 @@ import time
 import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stderr
 from http import HTTPStatus
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -23,7 +25,9 @@ from server import (
     DECISION_METRIC_CATALOG,
     DARTError,
     DART_CACHEABLE_ENDPOINTS,
+    DART_REQUEST_TIMEOUT_SECONDS,
     DashboardHandler,
+    ExclusiveThreadingHTTPServer,
     INSTANCE_ID,
     MAX_DART_RESPONSE_BYTES,
     MAX_FINANCIAL_HISTORY_OBSERVATIONS,
@@ -63,6 +67,46 @@ ROOT = Path(__file__).resolve().parent
 
 
 class ServerDeploymentTests(unittest.TestCase):
+    def test_local_server_suppresses_only_expected_client_disconnects(self):
+        http_server = object.__new__(ExclusiveThreadingHTTPServer)
+        with patch.object(ThreadingHTTPServer, "handle_error") as fallback:
+            for error in (
+                BrokenPipeError("closed"),
+                ConnectionAbortedError("aborted"),
+                ConnectionResetError("reset"),
+            ):
+                with self.subTest(error=type(error).__name__):
+                    try:
+                        raise error
+                    except OSError:
+                        http_server.handle_error(object(), ("127.0.0.1", 12345))
+            fallback.assert_not_called()
+
+            try:
+                raise RuntimeError("unexpected")
+            except RuntimeError:
+                http_server.handle_error(object(), ("127.0.0.1", 12345))
+            fallback.assert_called_once()
+
+    def test_request_handlers_do_not_log_or_retry_expected_client_disconnects(self):
+        for method_name, path in (("do_GET", "/"), ("do_POST", "/missing")):
+            with self.subTest(method=method_name):
+                handler = object.__new__(DashboardHandler)
+                handler.path = path
+                handler.origin_allowed = lambda: True
+                handler.serve_static = lambda *_args: (_ for _ in ()).throw(
+                    ConnectionAbortedError("client closed")
+                )
+                handler.send_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    ConnectionAbortedError("client closed")
+                )
+                stream = io.StringIO()
+
+                with redirect_stderr(stream):
+                    getattr(handler, method_name)()
+
+                self.assertEqual(stream.getvalue(), "")
+
     def test_decision_metric_metadata_declares_signal_formula_source_and_limit(self):
         self.assertEqual(
             {item["dimension_id"] for item in DECISION_DIMENSION_CATALOG},
@@ -78,9 +122,7 @@ class ServerDeploymentTests(unittest.TestCase):
             "salary_to_revenue",
             {item["metric_id"] for item in DECISION_METRIC_CATALOG},
         )
-        catalog_metric_ids = {
-            item["metric_id"] for item in DECISION_METRIC_CATALOG
-        }
+        catalog_metric_ids = {item["metric_id"] for item in DECISION_METRIC_CATALOG}
         self.assertTrue(
             {
                 metric_id
@@ -145,16 +187,18 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertEqual(merged["LOCAL_ONLY"], "yes")
 
     def test_analysis_request_accepts_csv_corp_codes_and_metric_ids(self):
-        request = analysis_request_from_payload({
-            "question": "비교해줘",
-            "view": "strategy",
-            "corp_codes": "00126380, 00401731",
-            "metric_ids": "employees_total, operating_profit",
-            "year": "2024",
-            "report_code": "11011",
-            "page": "2",
-            "page_size": "10",
-        })
+        request = analysis_request_from_payload(
+            {
+                "question": "비교해줘",
+                "view": "strategy",
+                "corp_codes": "00126380, 00401731",
+                "metric_ids": "employees_total, operating_profit",
+                "year": "2024",
+                "report_code": "11011",
+                "page": "2",
+                "page_size": "10",
+            }
+        )
 
         self.assertEqual(request.corp_codes, ("00126380", "00401731"))
         self.assertEqual(request.metric_ids, ("employees_total", "operating_profit"))
@@ -163,11 +207,13 @@ class ServerDeploymentTests(unittest.TestCase):
 
     def test_analysis_request_rejects_non_numeric_paging_values(self):
         with self.assertRaisesRegex(ValueError, "page와 page_size는 숫자"):
-            analysis_request_from_payload({
-                "corp_codes": ["00126380"],
-                "page": "first",
-                "page_size": "10",
-            })
+            analysis_request_from_payload(
+                {
+                    "corp_codes": ["00126380"],
+                    "page": "first",
+                    "page_size": "10",
+                }
+            )
 
     def test_analysis_request_default_question_is_hr_decision_framed(self):
         request = analysis_request_from_payload({"corp_codes": ["00126380"]})
@@ -179,12 +225,14 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertNotIn("재무구조 차이", request.question)
 
     def test_all_workforce_source_endpoints_are_cacheable(self):
-        self.assertTrue({
-            "fnlttSinglAcnt.json",
-            "empSttus.json",
-            "exctvSttus.json",
-            "unrstExctvMendngSttus.json",
-        }.issubset(DART_CACHEABLE_ENDPOINTS))
+        self.assertTrue(
+            {
+                "fnlttSinglAcnt.json",
+                "empSttus.json",
+                "exctvSttus.json",
+                "unrstExctvMendngSttus.json",
+            }.issubset(DART_CACHEABLE_ENDPOINTS)
+        )
 
     def test_json_body_requires_explicit_json_content_type(self):
         body = b'{"ok":true}'
@@ -206,6 +254,39 @@ class ServerDeploymentTests(unittest.TestCase):
         handler.headers["Content-Length"] = str(len(nonfinite))
         with self.assertRaises(ValueError):
             handler.read_json_body()
+
+    def test_malformed_content_length_uses_fixed_response_and_content_free_log(self):
+        untrusted_header = "sk-request-header-secret-123456789"
+        handler = object.__new__(DashboardHandler)
+        handler.path = "/api/analysis"
+        handler.headers = {
+            "Content-Length": untrusted_header,
+            "Content-Type": "application/json",
+            "Host": "localhost",
+        }
+        handler.rfile = io.BytesIO(b"{}")
+        handler.enforce_rate_limit = lambda: True
+        responses = []
+        handler.send_json = lambda payload, status=HTTPStatus.OK, headers=None: responses.append(
+            (status, payload)
+        )
+        stderr = io.StringIO()
+
+        with redirect_stderr(stderr):
+            handler.do_POST()
+
+        status, payload = responses[-1]
+        rendered = json.dumps(payload, ensure_ascii=False)
+        log = stderr.getvalue()
+        self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(
+            payload["error"],
+            "Content-Length 헤더 형식이 올바르지 않습니다.",
+        )
+        self.assertIn("type=MalformedContentLength", log)
+        self.assertIn("path=/api/analysis", log)
+        self.assertNotIn(untrusted_header, rendered)
+        self.assertNotIn(untrusted_header, log)
 
     def test_http_server_banner_does_not_disclose_python_version(self):
         handler = object.__new__(DashboardHandler)
@@ -340,6 +421,7 @@ class ServerDeploymentTests(unittest.TestCase):
     def test_main_treats_keyboard_interrupt_as_clean_shutdown(self):
         with patch("server.run_local_server", side_effect=KeyboardInterrupt):
             self.assertEqual(main(), 0)
+
     def test_identical_concurrent_dart_cache_misses_are_coalesced(self):
         payload = b'{"status":"000","list":[]}'
         started = threading.Event()
@@ -361,7 +443,7 @@ class ServerDeploymentTests(unittest.TestCase):
 
         def fake_urlopen(_request, timeout):
             nonlocal calls
-            self.assertEqual(timeout, 40)
+            self.assertEqual(timeout, DART_REQUEST_TIMEOUT_SECONDS)
             with calls_lock:
                 calls += 1
             return SlowResponse()
@@ -409,6 +491,9 @@ class ServerDeploymentTests(unittest.TestCase):
             cache = data_dir / "corp_codes.json"
             cache.write_bytes(b"\xffnot-utf8")
             with (
+                patch("server.API_KEY", "x" * 40),
+                patch("server.BUNDLED_CORP_CATALOG", data_dir / "missing-seed.json.gz"),
+                patch("server.DEPLOYED_ON_VERCEL", False),
                 patch("server.DATA_DIR", data_dir),
                 patch("server.CORP_CACHE", cache),
                 patch("server.dart_request", return_value=archive_buffer.getvalue()),
@@ -434,6 +519,9 @@ class ServerDeploymentTests(unittest.TestCase):
             data_dir = Path(directory)
             cache = data_dir / "corp_codes.json"
             with (
+                patch("server.API_KEY", "x" * 40),
+                patch("server.BUNDLED_CORP_CATALOG", data_dir / "missing-seed.json.gz"),
+                patch("server.DEPLOYED_ON_VERCEL", False),
                 patch("server.DATA_DIR", data_dir),
                 patch("server.CORP_CACHE", cache),
                 patch("server.dart_request", return_value=archive_buffer.getvalue()),
@@ -472,30 +560,41 @@ class ServerDeploymentTests(unittest.TestCase):
             archive.writestr("CORPCODE.xml", xml)
 
         with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
             with (
-                patch("server.DATA_DIR", Path(directory)),
-                patch("server.CORP_CACHE", Path(directory) / "missing.json"),
+                patch("server.API_KEY", "x" * 40),
+                patch("server.BUNDLED_CORP_CATALOG", data_dir / "missing-seed.json.gz"),
+                patch("server.DEPLOYED_ON_VERCEL", False),
+                patch("server.DATA_DIR", data_dir),
+                patch("server.CORP_CACHE", data_dir / "missing.json"),
                 patch("server.dart_request", return_value=archive_buffer.getvalue()),
             ):
                 with self.assertRaisesRegex(DARTError, "허용되지 않은 선언"):
                     load_corp_codes()
 
     def test_company_catalog_and_search_input_are_bounded(self):
-        catalog = _normalise_company_catalog([
-            {"corp_code": "00123456", "corp_name": " 정상기업 ", "stock_code": "123456"},
-            {"corp_code": "00123456", "corp_name": "중복기업", "stock_code": "654321"},
-            {"corp_code": "bad", "corp_name": "잘못된 코드", "stock_code": ""},
-            {"corp_code": "00999999", "corp_name": "제어\n문자", "stock_code": "999999"},
-            {"corp_code": "00888888", "corp_name": "방향\u202e전환", "stock_code": "888888"},
-            {"corp_code": "00777777", "corp_name": "깨진\ud800문자", "stock_code": "777777"},
-            "not-a-company",
-        ])
+        catalog = _normalise_company_catalog(
+            [
+                {"corp_code": "00123456", "corp_name": " 정상기업 ", "stock_code": "123456"},
+                {"corp_code": "00123456", "corp_name": "중복기업", "stock_code": "654321"},
+                {"corp_code": "bad", "corp_name": "잘못된 코드", "stock_code": ""},
+                {"corp_code": "00999999", "corp_name": "제어\n문자", "stock_code": "999999"},
+                {"corp_code": "00888888", "corp_name": "방향\u202e전환", "stock_code": "888888"},
+                {"corp_code": "00777777", "corp_name": "깨진\ud800문자", "stock_code": "777777"},
+                "not-a-company",
+            ]
+        )
 
-        self.assertEqual(catalog, [{
-            "corp_code": "00123456",
-            "corp_name": "정상기업",
-            "stock_code": "123456",
-        }])
+        self.assertEqual(
+            catalog,
+            [
+                {
+                    "corp_code": "00123456",
+                    "corp_name": "정상기업",
+                    "stock_code": "123456",
+                }
+            ],
+        )
         with patch("server.load_corp_codes") as load_catalog:
             with self.assertRaises(ValueError):
                 search_companies("가" * 101)
@@ -533,9 +632,7 @@ class ServerDeploymentTests(unittest.TestCase):
             patch("server.fetch_company_people", side_effect=fake_people),
         ):
             financials = fetch_financial_results(["001", "002"], "2024", "11011")
-            people_history = fetch_people_history_results(
-                ["001", "002"], "2023", "2024", "11011"
-            )
+            people_history = fetch_people_history_results(["001", "002"], "2023", "2024", "11011")
 
         failed_financial = financials[0]
         self.assertIsNone(failed_financial["financials"])
@@ -586,20 +683,22 @@ class ServerDeploymentTests(unittest.TestCase):
             ("/api/executives/history", "server.fetch_executive_history_results"),
         )
         for endpoint, downstream in cases:
-            with self.subTest(endpoint=endpoint), patch(
-                downstream,
-                side_effect=AssertionError("history fetch must not run"),
+            with (
+                self.subTest(endpoint=endpoint),
+                patch(
+                    downstream,
+                    side_effect=AssertionError("history fetch must not run"),
+                ),
             ):
                 handler = object.__new__(DashboardHandler)
                 handler.path = (
-                    f"{endpoint}?corp_codes={codes}&from_year=2014&to_year=2024"
-                    "&report_code=11011"
+                    f"{endpoint}?corp_codes={codes}&from_year=2014&to_year=2024&report_code=11011"
                 )
                 handler.headers = {"Host": "localhost"}
                 handler.enforce_rate_limit = lambda: True
                 responses = []
-                handler.send_json = (
-                    lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
+                handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+                    (status, payload)
                 )
 
                 handler.do_GET()
@@ -636,9 +735,7 @@ class ServerDeploymentTests(unittest.TestCase):
             patch("server.fetch_company_people", side_effect=fake_people),
             patch("server.fetch_company_financials", side_effect=fake_financial),
         ):
-            observations = fetch_workforce_observations(
-                ["001", "002"], "2024", "11011"
-            )
+            observations = fetch_workforce_observations(["001", "002"], "2024", "11011")
 
         self.assertEqual(len(observations), 2)
         self.assertTrue(observations[0].errors)
@@ -649,23 +746,31 @@ class ServerDeploymentTests(unittest.TestCase):
     def test_people_summary_uses_report_period_and_never_emits_null_source_url(self):
         def fake_dart(endpoint, _params):
             if endpoint == "empSttus.json":
-                return {"list": [{
-                    "sexdstn": "전체",
-                    "sm": "10",
-                    "rgllbr_co": "10",
-                    "cnttk_co": "0",
-                    "avrg_cnwk_sdytrn": "5",
-                    "jan_salary_am": "50000000",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "sexdstn": "전체",
+                            "sm": "10",
+                            "rgllbr_co": "10",
+                            "cnttk_co": "0",
+                            "avrg_cnwk_sdytrn": "5",
+                            "jan_salary_am": "50000000",
+                        }
+                    ]
+                }
             if endpoint == "exctvSttus.json":
-                return {"list": [{
-                    "sexdstn": "남",
-                    "ofcps": "사내이사",
-                    "rgist_exctv_at": "등기임원",
-                    "fte_at": "상근",
-                    "hffc_pd": "24개월",
-                    "tenure_end_on": "2025년 06월 30일",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "sexdstn": "남",
+                            "ofcps": "사내이사",
+                            "rgist_exctv_at": "등기임원",
+                            "fte_at": "상근",
+                            "hffc_pd": "24개월",
+                            "tenure_end_on": "2025년 06월 30일",
+                        }
+                    ]
+                }
             return {"list": []}
 
         with patch("server.dart_request", side_effect=fake_dart):
@@ -692,20 +797,28 @@ class ServerDeploymentTests(unittest.TestCase):
     def test_people_summary_preserves_disclosed_zero_and_missing_tenure(self):
         def fake_dart(endpoint, _params):
             if endpoint == "empSttus.json":
-                return {"list": [{
-                    "sexdstn": "전체",
-                    "sm": "10",
-                    "rgllbr_co": "10",
-                    "cnttk_co": "0",
-                    "rgllbr_abacpt_labrr_co": "0",
-                    "cnttk_abacpt_labrr_co": "0",
-                    "fyer_salary_totamt": "0",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "sexdstn": "전체",
+                            "sm": "10",
+                            "rgllbr_co": "10",
+                            "cnttk_co": "0",
+                            "rgllbr_abacpt_labrr_co": "0",
+                            "cnttk_abacpt_labrr_co": "0",
+                            "fyer_salary_totamt": "0",
+                        }
+                    ]
+                }
             if endpoint == "unrstExctvMendngSttus.json":
-                return {"list": [{
-                    "nmpr": "0",
-                    "fyer_salary_totamt": "0",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "nmpr": "0",
+                            "fyer_salary_totamt": "0",
+                        }
+                    ]
+                }
             return {"list": []}
 
         with patch("server.dart_request", side_effect=fake_dart):
@@ -730,14 +843,18 @@ class ServerDeploymentTests(unittest.TestCase):
             if endpoint == "empSttus.json":
                 return {"list": "not-a-row-list"}
             if endpoint == "exctvSttus.json":
-                return {"list": [{
-                    "sexdstn": "남",
-                    "ofcps": "사내이사",
-                    "rgist_exctv_at": "등기임원",
-                    "fte_at": "상근",
-                    "hffc_pd": "12개월",
-                    "tenure_end_on": "2028년 12월 31일",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "sexdstn": "남",
+                            "ofcps": "사내이사",
+                            "rgist_exctv_at": "등기임원",
+                            "fte_at": "상근",
+                            "hffc_pd": "12개월",
+                            "tenure_end_on": "2028년 12월 31일",
+                        }
+                    ]
+                }
             return {"list": []}
 
         with patch("server.dart_request", side_effect=fake_people_dart):
@@ -787,13 +904,15 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertIn("응답 목록이 없습니다", missing_list_result["error"])
 
     def test_invalid_receipt_number_is_not_exposed_as_source_link(self):
-        rows = [{
-            "fs_div": "CFS",
-            "sj_div": "IS",
-            "account_nm": "매출액",
-            "thstrm_amount": "100",
-            "rcept_no": "bad&redirect=https://example.test",
-        }]
+        rows = [
+            {
+                "fs_div": "CFS",
+                "sj_div": "IS",
+                "account_nm": "매출액",
+                "thstrm_amount": "100",
+                "rcept_no": "bad&redirect=https://example.test",
+            }
+        ]
         with patch("server.dart_request", return_value={"list": rows}):
             result = fetch_company_financials(
                 {"corp_code": "001", "corp_name": "A사"},
@@ -855,13 +974,15 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertIsNone(result["financials"]["operating_margin"])
 
     def test_financial_account_matching_allows_only_whitespace_variation(self):
-        rows = [{
-            "fs_div": "CFS",
-            "sj_div": "IS",
-            "account_nm": "영업이익 (손실)",
-            "thstrm_amount": "(100000000)",
-            "rcept_no": "20250000000001",
-        }]
+        rows = [
+            {
+                "fs_div": "CFS",
+                "sj_div": "IS",
+                "account_nm": "영업이익 (손실)",
+                "thstrm_amount": "(100000000)",
+                "rcept_no": "20250000000001",
+            }
+        ]
         with patch("server.dart_request", return_value={"list": rows}):
             result = fetch_company_financials(
                 {"corp_code": "001", "corp_name": "A사"},
@@ -896,12 +1017,16 @@ class ServerDeploymentTests(unittest.TestCase):
     def test_people_response_does_not_expose_unregistered_pay_free_text(self):
         def fake_dart(endpoint, _params):
             if endpoint == "unrstExctvMendngSttus.json":
-                return {"list": [{
-                    "nmpr": "1",
-                    "jan_salary_am": "100000000",
-                    "se": "홍길동 미등기임원 비밀메모",
-                    "rm": "개인 이름 또는 자유서술 메모",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "nmpr": "1",
+                            "jan_salary_am": "100000000",
+                            "se": "홍길동 미등기임원 비밀메모",
+                            "rm": "개인 이름 또는 자유서술 메모",
+                        }
+                    ]
+                }
             return {"list": []}
 
         with patch("server.dart_request", side_effect=fake_dart):
@@ -1063,14 +1188,16 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertNotIn("error", result)
 
     def test_financial_currency_is_a_bounded_iso_style_code(self):
-        rows = [{
-            "account_nm": "매출액",
-            "sj_div": "IS",
-            "fs_div": "CFS",
-            "thstrm_amount": "100",
-            "currency": "USD\ud800<script>",
-            "rcept_no": "20240000000001",
-        }]
+        rows = [
+            {
+                "account_nm": "매출액",
+                "sj_div": "IS",
+                "fs_div": "CFS",
+                "thstrm_amount": "100",
+                "currency": "USD\ud800<script>",
+                "rcept_no": "20240000000001",
+            }
+        ]
         with patch("server.dart_request", return_value={"list": rows}):
             from server import fetch_company_financials
 
@@ -1086,14 +1213,18 @@ class ServerDeploymentTests(unittest.TestCase):
     def test_people_breakdown_parses_korean_year_month_tenure(self):
         def fake_dart(endpoint, _params):
             if endpoint == "empSttus.json":
-                return {"list": [{
-                    "sexdstn": "전체",
-                    "sm": "10",
-                    "rgllbr_co": "10",
-                    "cnttk_co": "0",
-                    "avrg_cnwk_sdytrn": "6년 3개월",
-                    "rcept_no": "20240000000001",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "sexdstn": "전체",
+                            "sm": "10",
+                            "rgllbr_co": "10",
+                            "cnttk_co": "0",
+                            "avrg_cnwk_sdytrn": "6년 3개월",
+                            "rcept_no": "20240000000001",
+                        }
+                    ]
+                }
             return {"list": []}
 
         with patch("server.dart_request", side_effect=fake_dart):
@@ -1221,7 +1352,9 @@ class ServerDeploymentTests(unittest.TestCase):
         handler.path = "/api/health"
         handler.headers = {"Host": "localhost"}
         responses = []
-        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
 
         handler.do_GET()
 
@@ -1229,21 +1362,32 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertEqual(payload["app"]["id"], APP_ID)
         self.assertEqual(payload["app"]["version"], APP_VERSION)
         self.assertEqual(payload["app"]["instance_id"], INSTANCE_ID)
+        self.assertEqual(
+            payload["classroom_sample"],
+            {
+                "available": True,
+                "endpoint": "/api/classroom/bootstrap",
+                "network_requests": 0,
+            },
+        )
+        self.assertTrue(payload["operator_ai_access"]["authentication_required"])
         runtime = payload["runtime"]
         self.assertEqual(runtime["dart_cache"]["scope"], "per_process")
         self.assertEqual(runtime["rate_limiter"]["scope"], "per_process")
         self.assertFalse(runtime["rate_limiter"]["distributed_enforcement"])
         self.assertEqual(runtime["orchestration_telemetry"]["scope"], "per_process")
-        self.assertFalse(
-            runtime["orchestration_telemetry"]["contains_user_content"]
-        )
+        self.assertFalse(runtime["orchestration_telemetry"]["contains_user_content"])
+        self.assertEqual(runtime["outbound_deadline"]["attempt_timeout_seconds"], 10)
+        self.assertLessEqual(runtime["outbound_deadline"]["retry_attempts"], 3)
 
     def test_unexpected_error_response_hides_internal_details(self):
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/health"
         handler.headers = {"Host": "localhost"}
         responses = []
-        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
 
         with patch("server.DART_RESPONSE_CACHE.stats", side_effect=RuntimeError("secret-internal")):
             handler.do_GET()
@@ -1281,13 +1425,17 @@ class ServerDeploymentTests(unittest.TestCase):
     def test_public_people_breakdown_rejects_negative_and_fractional_counts(self):
         def fake_dart(endpoint, _params):
             if endpoint == "empSttus.json":
-                return {"list": [{
-                    "sexdstn": "전체",
-                    "sm": "1000000001",
-                    "rgllbr_co": "1.5",
-                    "cnttk_co": "0",
-                    "jan_salary_am": "-100",
-                }]}
+                return {
+                    "list": [
+                        {
+                            "sexdstn": "전체",
+                            "sm": "1000000001",
+                            "rgllbr_co": "1.5",
+                            "cnttk_co": "0",
+                            "jan_salary_am": "-100",
+                        }
+                    ]
+                }
             return {"list": []}
 
         with patch("server.dart_request", side_effect=fake_dart):
@@ -1306,8 +1454,35 @@ class ServerDeploymentTests(unittest.TestCase):
     def test_vercel_entrypoint_reuses_dashboard_handler(self):
         self.assertTrue(issubclass(VercelHandler, DashboardHandler))
         config = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
-        self.assertEqual(config["rewrites"][0]["destination"], "/api/index?__route=$1")
+        self.assertNotIn("rewrites", config)
+        self.assertEqual(
+            config["routes"],
+            [{"src": "/(.*)", "dest": "/api/index?__route=$1"}],
+        )
         self.assertGreaterEqual(config["functions"]["api/index.py"]["maxDuration"], 60)
+
+    def test_runtime_inputs_are_not_public_static_routes(self):
+        for request_path in (
+            "/server.py",
+            "/pyproject.toml",
+            "/uv.lock",
+            "/.python-version",
+            "/seed/corp_codes.json.gz",
+        ):
+            with self.subTest(request_path=request_path):
+                responses = []
+                handler = object.__new__(DashboardHandler)
+                handler.path = request_path
+                handler.headers = {"Host": "localhost"}
+                handler.send_json = lambda payload, status=HTTPStatus.OK, headers=None: (
+                    responses.append((status, payload))
+                )
+
+                handler.do_GET()
+
+                self.assertEqual(
+                    responses, [(HTTPStatus.NOT_FOUND, {"error": "페이지를 찾을 수 없습니다."})]
+                )
 
     def test_vercel_rewrite_restores_public_request_target(self):
         from server import _effective_request_target
@@ -1472,14 +1647,16 @@ class ServerDeploymentTests(unittest.TestCase):
             user_openai_provider("sk-비ASCII키")
 
     def test_point_analysis_context_uses_guarded_workforce_orchestration(self):
-        body = json.dumps({
-            "question": "직원 수와 영업이익을 비교해줘",
-            "view": "strategy",
-            "corp_codes": ["001"],
-            "year": "2024",
-            "report_code": "11011",
-            "metric_ids": ["employees_total", "operating_profit"],
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "question": "직원 수와 영업이익을 비교해줘",
+                "view": "strategy",
+                "corp_codes": ["001"],
+                "year": "2024",
+                "report_code": "11011",
+                "metric_ids": ["employees_total", "operating_profit"],
+            }
+        ).encode("utf-8")
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/analysis/context"
         handler.headers = {
@@ -1489,25 +1666,31 @@ class ServerDeploymentTests(unittest.TestCase):
         }
         handler.rfile = io.BytesIO(body)
         responses = []
-        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
-        observations = [WorkforceObservation.from_mapping({
-            "company": {"corp_code": "001", "corp_name": "A사"},
-            "year": "2024",
-            "report_code": "11011",
-            "employee_rows": [{
-                "sexdstn": "전체",
-                "sm": "100",
-                "rgllbr_co": "90",
-                "cnttk_co": "10",
-                "avrg_cnwk_sdytrn": "5",
-                "jan_salary_am": "50000000",
-                "rcept_no": "20250000000001",
-            }],
-            "financials": {"operating_profit": 1000000000, "revenue": 10000000000},
-            "source_urls": [
-                "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000001"
-            ],
-        })]
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
+        observations = [
+            WorkforceObservation.from_mapping(
+                {
+                    "company": {"corp_code": "001", "corp_name": "A사"},
+                    "year": "2024",
+                    "report_code": "11011",
+                    "employee_rows": [
+                        {
+                            "sexdstn": "전체",
+                            "sm": "100",
+                            "rgllbr_co": "90",
+                            "cnttk_co": "10",
+                            "avrg_cnwk_sdytrn": "5",
+                            "jan_salary_am": "50000000",
+                            "rcept_no": "20250000000001",
+                        }
+                    ],
+                    "financials": {"operating_profit": 1000000000, "revenue": 10000000000},
+                    "source_urls": ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000001"],
+                }
+            )
+        ]
 
         with patch("server.fetch_workforce_observations", return_value=observations):
             handler.do_POST()
@@ -1522,13 +1705,15 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertIn("operating_profit", metric_ids)
 
     def test_analysis_context_never_inspects_ai_credentials(self):
-        body = json.dumps({
-            "question": "근거 컨텍스트를 만들어줘",
-            "view": "strategy",
-            "corp_codes": ["001"],
-            "year": "2024",
-            "report_code": "11011",
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "question": "근거 컨텍스트를 만들어줘",
+                "view": "strategy",
+                "corp_codes": ["001"],
+                "year": "2024",
+                "report_code": "11011",
+            }
+        ).encode("utf-8")
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/analysis/context"
         handler.headers = {
@@ -1545,15 +1730,17 @@ class ServerDeploymentTests(unittest.TestCase):
         handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
             (status, payload)
         )
-        observations = [WorkforceObservation.from_mapping({
-            "company": {"corp_code": "001", "corp_name": "A사"},
-            "year": "2024",
-            "report_code": "11011",
-            "financials": {"revenue": 100},
-            "source_urls": [
-                "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20240000000001"
-            ],
-        })]
+        observations = [
+            WorkforceObservation.from_mapping(
+                {
+                    "company": {"corp_code": "001", "corp_name": "A사"},
+                    "year": "2024",
+                    "report_code": "11011",
+                    "financials": {"revenue": 100},
+                    "source_urls": ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20240000000001"],
+                }
+            )
+        ]
 
         with patch("server.fetch_workforce_observations", return_value=observations):
             handler.do_POST()
@@ -1562,13 +1749,15 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertEqual(responses[-1][1]["provider"]["status"], "not_configured")
 
     def test_analysis_context_fails_closed_on_downgraded_orchestration_response(self):
-        body = json.dumps({
-            "question": "compare",
-            "view": "strategy",
-            "corp_codes": ["001"],
-            "year": "2024",
-            "report_code": "11011",
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "question": "compare",
+                "view": "strategy",
+                "corp_codes": ["001"],
+                "year": "2024",
+                "report_code": "11011",
+            }
+        ).encode("utf-8")
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/analysis/context"
         handler.headers = {
@@ -1623,8 +1812,8 @@ class ServerDeploymentTests(unittest.TestCase):
                 handler.rfile = io.BytesIO(body)
                 handler.enforce_rate_limit = lambda: True
                 responses = []
-                handler.send_json = (
-                    lambda response, status=HTTPStatus.OK: responses.append((status, response))
+                handler.send_json = lambda response, status=HTTPStatus.OK: responses.append(
+                    (status, response)
                 )
 
                 with patch("server.fetch_workforce_observations") as fetch:
@@ -1661,8 +1850,8 @@ class ServerDeploymentTests(unittest.TestCase):
                 handler.rfile = io.BytesIO(body)
                 handler.enforce_rate_limit = lambda: True
                 responses = []
-                handler.send_json = (
-                    lambda response, status=HTTPStatus.OK: responses.append((status, response))
+                handler.send_json = lambda response, status=HTTPStatus.OK: responses.append(
+                    (status, response)
                 )
 
                 with patch("server.fetch_workforce_observations") as fetch:
@@ -1680,13 +1869,16 @@ class ServerDeploymentTests(unittest.TestCase):
             def analyze(self, *, prompt, context):
                 return "확인된 수치 [EV-deadbeefdead]"
 
-        body = json.dumps({
-            "question": "비교해줘",
-            "view": "strategy",
-            "corp_codes": ["001"],
-            "year": "2024",
-            "report_code": "11011",
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "question": "비교해줘",
+                "view": "strategy",
+                "corp_codes": ["001"],
+                "year": "2024",
+                "report_code": "11011",
+                "provider_data_consent": True,
+            }
+        ).encode("utf-8")
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/analysis"
         handler.headers = {
@@ -1697,25 +1889,31 @@ class ServerDeploymentTests(unittest.TestCase):
         handler.rfile = io.BytesIO(body)
         handler.request_openai_provider = lambda: FakeProvider()
         responses = []
-        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
-        observations = [WorkforceObservation.from_mapping({
-            "company": {"corp_code": "001", "corp_name": "A사"},
-            "year": "2024",
-            "report_code": "11011",
-            "employee_rows": [{
-                "sexdstn": "전체",
-                "sm": "100",
-                "rgllbr_co": "90",
-                "cnttk_co": "10",
-                "avrg_cnwk_sdytrn": "5",
-                "jan_salary_am": "50000000",
-                "rcept_no": "20250000000001",
-            }],
-            "financials": {"revenue": 10000000000},
-            "source_urls": [
-                "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000001"
-            ],
-        })]
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
+        observations = [
+            WorkforceObservation.from_mapping(
+                {
+                    "company": {"corp_code": "001", "corp_name": "A사"},
+                    "year": "2024",
+                    "report_code": "11011",
+                    "employee_rows": [
+                        {
+                            "sexdstn": "전체",
+                            "sm": "100",
+                            "rgllbr_co": "90",
+                            "cnttk_co": "10",
+                            "avrg_cnwk_sdytrn": "5",
+                            "jan_salary_am": "50000000",
+                            "rcept_no": "20250000000001",
+                        }
+                    ],
+                    "financials": {"revenue": 10000000000},
+                    "source_urls": ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000001"],
+                }
+            )
+        ]
 
         with patch("server.fetch_workforce_observations", return_value=observations):
             handler.do_POST()
@@ -1730,13 +1928,15 @@ class ServerDeploymentTests(unittest.TestCase):
         )
 
     def test_range_ai_is_fail_closed_before_legacy_provider_path(self):
-        body = json.dumps({
-            "question": "3년 추이를 비교해줘",
-            "corp_codes": ["001"],
-            "from_year": "2022",
-            "to_year": "2024",
-            "report_code": "11011",
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "question": "3년 추이를 비교해줘",
+                "corp_codes": ["001"],
+                "from_year": "2022",
+                "to_year": "2024",
+                "report_code": "11011",
+            }
+        ).encode("utf-8")
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/analysis"
         handler.headers = {
@@ -1747,7 +1947,9 @@ class ServerDeploymentTests(unittest.TestCase):
         handler.rfile = io.BytesIO(body)
         handler.request_openai_provider = lambda: None
         responses = []
-        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
 
         with patch("server.fetch_history_results") as fetch_history:
             handler.do_POST()
@@ -1761,13 +1963,15 @@ class ServerDeploymentTests(unittest.TestCase):
         fetch_history.assert_not_called()
 
     def test_range_context_is_also_fail_closed(self):
-        body = json.dumps({
-            "question": "3년 추이를 비교해줘",
-            "corp_codes": ["001"],
-            "from_year": "2022",
-            "to_year": "2024",
-            "report_code": "11011",
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "question": "3년 추이를 비교해줘",
+                "corp_codes": ["001"],
+                "from_year": "2022",
+                "to_year": "2024",
+                "report_code": "11011",
+            }
+        ).encode("utf-8")
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/analysis/context"
         handler.headers = {
@@ -1778,7 +1982,9 @@ class ServerDeploymentTests(unittest.TestCase):
         handler.rfile = io.BytesIO(body)
         handler.enforce_rate_limit = lambda: True
         responses = []
-        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
 
         with patch("server.fetch_history_results") as fetch_history:
             handler.do_POST()
@@ -1792,9 +1998,7 @@ class ServerDeploymentTests(unittest.TestCase):
 
     def test_get_workforce_orchestration_never_uses_ai_header(self):
         handler = object.__new__(DashboardHandler)
-        handler.path = (
-            "/api/workforce/orchestration?corp_codes=001&year=2024&report_code=11011"
-        )
+        handler.path = "/api/workforce/orchestration?corp_codes=001&year=2024&report_code=11011"
         handler.headers = {
             "Host": "localhost",
             "X-OpenAI-API-Key": "sk-user-test-key",
@@ -1804,16 +2008,20 @@ class ServerDeploymentTests(unittest.TestCase):
             "GET must never inspect or instantiate an AI provider"
         )
         responses = []
-        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append((status, payload))
-        observations = [WorkforceObservation.from_mapping({
-            "company": {"corp_code": "001", "corp_name": "A사"},
-            "year": "2024",
-            "report_code": "11011",
-            "financials": {"revenue": 100, "operating_profit": 10},
-            "source_urls": [
-                "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20240000000001"
-            ],
-        })]
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
+        observations = [
+            WorkforceObservation.from_mapping(
+                {
+                    "company": {"corp_code": "001", "corp_name": "A사"},
+                    "year": "2024",
+                    "report_code": "11011",
+                    "financials": {"revenue": 100, "operating_profit": 10},
+                    "source_urls": ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20240000000001"],
+                }
+            )
+        ]
 
         with patch("server.fetch_workforce_observations", return_value=observations):
             handler.do_GET()
@@ -1824,9 +2032,7 @@ class ServerDeploymentTests(unittest.TestCase):
 
     def test_get_workforce_orchestration_fails_closed_on_wrong_schema_version_type(self):
         handler = object.__new__(DashboardHandler)
-        handler.path = (
-            "/api/workforce/orchestration?corp_codes=001&year=2024&report_code=11011"
-        )
+        handler.path = "/api/workforce/orchestration?corp_codes=001&year=2024&report_code=11011"
         handler.headers = {"Host": "localhost"}
         handler.enforce_rate_limit = lambda: True
         handler.log_internal_error = lambda _exc: None
