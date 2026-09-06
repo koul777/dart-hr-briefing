@@ -70,6 +70,11 @@ Invoke-RestMethod https://dart-ruby-zeta.vercel.app/api/health
 Invoke-RestMethod http://127.0.0.1:8000/api/health
 ```
 
+<p align="center">
+  <img src="promo_video/public/screens/app-home.png" width="100%" alt="DART HR Briefing 첫 화면과 주요 조작 영역" />
+  <br><sub><b>화면 1.</b> 상단에서 기준연도·보고서를 정하고, 왼쪽에서 기업 선택과 AI 브리핑을 실행합니다.</sub>
+</p>
+
 ### 2. API 키 준비
 
 - **OpenDART API Key** — 기업 검색과 공시 데이터 조회에 필요합니다. 공개 URL에서는 서버가 관리하고, 로컬에서는 `.env`의 `OPENDART_API_KEY`에 입력합니다.
@@ -84,6 +89,11 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 4. 비교할 기업은 가능한 한 업종·규모·사업모델이 비슷하도록 구성합니다.
 5. **인력·보상 비교**를 누릅니다. 재무·직원·임원·추이 데이터가 준비될 때까지 버튼의 로딩 상태를 기다립니다.
 6. 상단 데이터 스트립에서 기준연도·보고서·수신 기업 수·근거 준비도·원문 연결 상태를 확인합니다.
+
+<p align="center">
+  <img src="promo_video/public/screens/companies-selected.png" width="48%" alt="삼성전자와 SK하이닉스를 비교 기업으로 선택한 화면" />
+  <br><sub><b>화면 2.</b> 비교 기업은 왼쪽 목록에서 확인합니다. 예시는 삼성전자와 SK하이닉스 2개 기업을 선택한 상태입니다.</sub>
+</p>
 
 > 기준연도, 보고서 또는 기업 목록을 바꾸면 이전 비교·Strategy Brief·AI 대화의
 > 입력 조건이 달라집니다. 화면 안내에 따라 **인력·보상 비교**를 다시 실행하세요.
@@ -106,6 +116,16 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 **초기화**는 기본 재무 지표 묶음으로 되돌립니다. `◐` 버튼은 밝은/어두운 테마를
 전환하며 선택한 테마는 해당 브라우저에 저장됩니다.
 
+<p align="center">
+  <img src="promo_video/public/screens/tab-overview.png" width="100%" alt="Overview 탭의 핵심 KPI와 비교 차트" />
+  <br><sub><b>화면 3.</b> Overview에서는 전년 대비 변화, 핵심 KPI와 기업별 재무 규모를 먼저 훑습니다.</sub>
+</p>
+
+<p align="center">
+  <img src="promo_video/public/screens/tab-compare.png" width="100%" alt="Compare 탭의 기업별 핵심 재무지표 표" />
+  <br><sub><b>화면 4.</b> Compare에서는 같은 공시 기준의 원값과 비율을 나란히 확인합니다.</sub>
+</p>
+
 ### 5. Strategy Brief와 근거 확인
 
 1. **Strategy Brief** 탭에서 생산성·보상 지속가능성·인력구조·리더십 연속성·근거 연결 완전성의 준비도를 확인합니다.
@@ -113,6 +133,16 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 3. `SOURCE LINKS`에서 기업별 DART 원문을 열고 화면 수치와 기준연도·보고서를 대조합니다.
 4. `QUALITY GATE`의 누락·비교 제한과 정정공시 최신성 미검증 경고를 확인합니다.
 5. `TRACE`는 데이터 정규화, 품질 점검, 개인정보·근거·출력 가드의 실행 상태를 보여 줍니다.
+
+<p align="center">
+  <img src="promo_video/public/screens/tab-strategy.png" width="100%" alt="Strategy Brief의 보상 대시보드와 Decision Brief" />
+  <br><sub><b>화면 5.</b> Strategy Brief는 판단 신호와 한계, 다음 확인 행동을 한 카드에서 읽도록 구성했습니다.</sub>
+</p>
+
+<p align="center">
+  <img src="promo_video/public/screens/strategy-evidence.png" width="100%" alt="Strategy Brief의 Source Links, Quality Gate, AI Policy와 Trace" />
+  <br><sub><b>화면 6.</b> 아래쪽 근거 영역에서 DART 원문, 품질 게이트, AI 정책과 에이전트 실행 이력을 함께 검증합니다.</sub>
+</p>
 
 `ready`는 자동 의사결정 허가가 아니라 현재 비교 범위에서 근거 연결이 상대적으로
 충분하다는 뜻입니다. 채용·보상·감축·평가·승계 조치를 정하려면 카드에 표시된
@@ -127,6 +157,11 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 5. 답변의 **확인된 사실·해석·가설·추가 검증 데이터·KPI**를 구분해 읽고, 근거 ID와 DART 원문을 대조합니다.
 6. 같은 기업·연도·보고서에서는 후속 질문을 이어갈 수 있습니다. **대화 지우기**는 현재 대화만 초기화합니다.
 7. **분석 프롬프트 복사**는 같은 구조의 근거 중심 질문을 다른 AI 도구에서 재사용할 때 씁니다.
+
+<p align="center">
+  <img src="promo_video/public/screens/ai-question-panel.png" width="46%" alt="OpenAI API Key와 질문을 입력하는 AI HR 브리핑 패널" />
+  <br><sub><b>화면 7.</b> OpenAI 키와 질문은 왼쪽 AI HR 브리핑 패널에 입력합니다. 키는 현재 대화에서만 사용됩니다.</sub>
+</p>
 
 AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 못하면 차단된 원문은
 표시하지 않습니다. 대신 검증된 OpenDART 근거 요약을 보여 주므로 근거 ID와 원문을
