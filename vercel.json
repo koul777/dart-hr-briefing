@@ -3,13 +3,13 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 120,
-      "excludeFiles": "{build/**,dist/**,video_work/**,docs/**,reports/**,.pytest_cache/**,.ruff_cache/**,__pycache__/**,test_*.py,*.exe,*.spec}"
+      "excludeFiles": "{.git/**,.github/**,.vercel/**,.playwright-cli/**,.pytest_cache/**,.ruff_cache/**,__pycache__/**,build/**,data/**,dist/**,docs/**,fixtures/**,reports/**,tools/**,training_deck/**,video_work/**,**/*.egg-info/**,test_*.py,*.exe,*.spec,*.visual-check.*}"
     }
   },
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/api/index"
+      "destination": "/api/index?__route=$1"
     }
   ]
 }

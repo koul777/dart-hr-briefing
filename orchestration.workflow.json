@@ -2,86 +2,74 @@
   "schema_version": 1,
   "diagram_type": "workflow",
   "meta": {
-    "title": "DART 재무비교 오케스트레이션",
+    "title": "DART HR Briefing · Evidence-first HR Analytics 오케스트레이션 v2",
+    "subtitle": "공시 근거를 결정 준비도·비교 신호·추가 내부데이터로 변환하고 선택적 AI 해석을 검증한다",
     "output": "orchestration-dart-claude.html",
-    "animation": "none",
+    "animation": "trace",
+    "visual_preset": "signal-flow",
     "quality_profile": "showcase",
-    "viewBox": [1000, 650],
+    "legend": { "mode": "hidden" },
+    "viewBox": [1100, 590],
     "views": [
       {
-        "id": "main-flow",
-        "label": "주요 실행 흐름",
-        "focus": ["user", "dashboard", "orchestrator", "dart_api", "normalizer", "claude_mcp", "answer"],
-        "note": "질문을 DART 근거 기반 비교 결과로 바꾸는 최소 실행 경로입니다."
+        "id": "decision-path",
+        "label": "근거에서 결정까지",
+        "focus": ["user", "dashboard", "request_gate", "deterministic_core", "decision_support", "trust_gate", "ai_provider", "output_guard", "answer"],
+        "note": "공시 사실이 결정 준비도·동료 중앙값·한계·다음 내부데이터를 거쳐 검증된 브리프로 제시됩니다."
       },
       {
-        "id": "ai-boundary",
-        "label": "Claude MCP 경계",
-        "focus": ["orchestrator", "normalizer", "claude_mcp", "answer"],
-        "note": "오케스트레이터가 만든 분석 컨텍스트를 Claude Code MCP가 해석합니다."
+        "id": "deterministic-path",
+        "label": "AI 없는 결정지원",
+        "focus": ["deterministic_core", "decision_support", "answer"],
+        "note": "AI가 없거나 차단되어도 결정 브리프와 근거 링크, 추적 정보는 결정론적으로 제공됩니다."
+      },
+      {
+        "id": "safety-boundary",
+        "label": "AI·신뢰 경계",
+        "focus": ["decision_support", "trust_gate", "ai_provider", "output_guard", "answer"],
+        "note": "허용 관측치만으로 결정지원을 재계산하고 provider context를 exact match로 재검증한 뒤 무근거 수치·인과 단정·허구 인물평가를 거부합니다."
       }
     ]
   },
   "lanes": [
-    { "id": "ui", "label": "사용자 화면" },
-    { "id": "orchestration", "label": "오케스트레이션" },
-    { "id": "data", "label": "DART 데이터" },
-    { "id": "ai", "label": "Claude 분석" }
+    { "id": "ui", "label": "사용자 · 화면" },
+    { "id": "control", "label": "정책 · 검증 경계" },
+    { "id": "evidence", "label": "DART 사실 · 근거" },
+    { "id": "intelligence", "label": "결정지원 · 선택적 AI" }
   ],
   "phases": [
-    { "id": "input", "label": "입력", "fromCol": 0, "toCol": 1 },
-    { "id": "prepare", "label": "수집·준비", "fromCol": 2, "toCol": 4, "variant": "emphasis" },
-    { "id": "answering", "label": "분석·결과", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+    { "id": "intake", "label": "질문 접수", "fromCol": 0, "toCol": 1 },
+    { "id": "grounding", "label": "수집 · 정규화", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "decision", "label": "결정지원", "fromCol": 4, "toCol": 4, "variant": "security" },
+    { "id": "interpretation", "label": "AI · 응답", "fromCol": 5, "toCol": 5, "variant": "dashed" }
   ],
   "groups": [
-    { "id": "control", "label": "실행 제어", "lane": "orchestration", "fromCol": 2, "toCol": 2, "variant": "emphasis" },
-    { "id": "mcp_boundary", "label": "Claude Code MCP", "lane": "ai", "fromCol": 5, "toCol": 5, "variant": "security" }
+    { "id": "evidence_boundary", "label": "DART 공시 근거 계층", "lane": "evidence", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "decision_boundary", "label": "결정론적 HR Analytics", "lane": "intelligence", "fromCol": 4, "toCol": 4, "variant": "emphasis" },
+    { "id": "policy_boundary", "label": "Fail-closed 신뢰 경계", "lane": "control", "fromCol": 4, "toCol": 5, "variant": "security" },
+    { "id": "provider_boundary", "label": "선택적 AI 해석", "lane": "intelligence", "fromCol": 5, "toCol": 5, "variant": "dashed" }
   ],
-  "mainPath": ["user", "dashboard", "orchestrator", "dart_api", "normalizer", "claude_mcp", "answer"],
+  "mainPath": ["user", "dashboard", "request_gate", "deterministic_core", "decision_support", "trust_gate", "ai_provider", "output_guard", "answer"],
   "nodes": [
-    { "id": "user", "lane": "ui", "col": 0, "type": "external", "label": "사용자", "sublabel": "질문 입력" },
-    { "id": "dashboard", "lane": "ui", "col": 1, "type": "frontend", "label": "비교 화면", "sublabel": "기업 선택" },
-    { "id": "answer", "lane": "ui", "col": 5, "type": "frontend", "label": "결과", "sublabel": "수치·근거" },
-    { "id": "orchestrator", "lane": "orchestration", "col": 2, "type": "backend", "label": "조정기", "sublabel": "조회·조립", "tag": "control" },
-    { "id": "dart_api", "lane": "data", "col": 3, "type": "cloud", "label": "OpenDART", "sublabel": "공시 API", "tag": "server key", "width": 76 },
-    { "id": "normalizer", "lane": "orchestration", "col": 4, "type": "backend", "label": "정규화", "sublabel": "단위·비율" },
-    { "id": "claude_mcp", "lane": "ai", "col": 5, "type": "messagebus", "label": "Claude MCP", "sublabel": "분석 도구", "tag": "tool boundary" }
+    { "id": "user", "lane": "ui", "col": 0, "type": "external", "label": "HR 의사결정자", "sublabel": "기업 · 연도 · 질문" },
+    { "id": "dashboard", "lane": "ui", "col": 1, "type": "frontend", "label": "HR Briefing", "sublabel": "Overview · Strategy", "width": 112 },
+    { "id": "answer", "lane": "ui", "col": 5, "type": "frontend", "label": "결정 브리프", "sublabel": "한계 · next data", "tag": "schema v2" },
+    { "id": "request_gate", "lane": "control", "col": 2, "type": "security", "label": "요청 게이트", "sublabel": "입력 검증 · rate limit", "tag": "fail closed" },
+    { "id": "trust_gate", "lane": "control", "col": 4, "type": "security", "label": "Provider 정책", "sublabel": "privacy · 허용 근거", "tag": "full / limited / block", "width": 112 },
+    { "id": "output_guard", "lane": "control", "col": 5, "type": "security", "label": "응답 가드", "sublabel": "수치 · 인과 · 인물", "tag": "reject on violation" },
+    { "id": "deterministic_core", "lane": "evidence", "col": 3, "type": "database", "label": "DART 근거", "sublabel": "정규화 · 품질 · EV-ID", "tag": "retry + cache", "width": 112 },
+    { "id": "decision_support", "lane": "intelligence", "col": 4, "type": "backend", "label": "결정지원 Agent", "sublabel": "준비도 · 비교 · 다음 데이터", "tag": "deterministic", "width": 128 },
+    { "id": "ai_provider", "lane": "intelligence", "col": 5, "type": "messagebus", "label": "AI Provider", "sublabel": "근거 범위 안의 해석", "tag": "optional", "width": 104 }
   ],
   "edges": [
     { "id": "user_dashboard", "from": "user", "to": "dashboard", "variant": "default" },
-    { "id": "dashboard_orchestrator", "from": "dashboard", "to": "orchestrator", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "drop" },
-    { "id": "orchestrator_dart", "from": "orchestrator", "to": "dart_api", "label": "조회", "variant": "default" },
-    { "id": "dart_normalizer", "from": "dart_api", "to": "normalizer", "variant": "default", "fromSide": "bottom", "toSide": "top", "route": "drop" },
-    { "id": "normalizer_claude", "from": "normalizer", "to": "claude_mcp", "variant": "emphasis" },
-    { "id": "claude_answer", "from": "claude_mcp", "to": "answer", "label": "해석", "variant": "emphasis", "role": "return", "route": "straight" }
-  ],
-  "cards": [
-    {
-      "dot": "cyan",
-      "title": "오케스트레이터",
-      "items": [
-        "사용자 질문과 비교 조건을 검증합니다",
-        "OpenDART 조회와 재무 정규화를 순서대로 실행합니다",
-        "질문·수치·제한조건을 분석 컨텍스트로 조립합니다"
-      ]
-    },
-    {
-      "dot": "violet",
-      "title": "Claude Code MCP",
-      "items": [
-        "DART를 직접 조회하는 수집기가 아닙니다",
-        "오케스트레이터가 전달한 근거를 해석합니다",
-        "결과에 사실·해석·주의점을 나눠 담습니다"
-      ]
-    },
-    {
-      "dot": "emerald",
-      "title": "현재 구현과 다음 연결",
-      "items": [
-        "현재 대시보드는 비교표와 프롬프트 복사를 제공합니다",
-        "API 키는 서버의 .env에서만 읽습니다",
-        "다음 단계에서 Claude MCP 실행 어댑터를 연결합니다"
-      ]
-    }
+    { "id": "dashboard_request", "from": "dashboard", "to": "request_gate", "label": "POST /api/analysis", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "drop", "labelSegment": 1 },
+    { "id": "request_core", "from": "request_gate", "to": "deterministic_core", "label": "검증된 조회", "variant": "emphasis", "labelDy": 14 },
+    { "id": "core_decision", "from": "deterministic_core", "to": "decision_support", "variant": "emphasis" },
+    { "id": "decision_policy", "from": "decision_support", "to": "trust_gate", "variant": "security", "fromSide": "top", "toSide": "bottom", "route": "drop" },
+    { "id": "policy_provider", "from": "trust_gate", "to": "ai_provider", "label": "available / limited", "variant": "security" },
+    { "id": "provider_output", "from": "ai_provider", "to": "output_guard", "label": "AI 해석", "variant": "security", "role": "return", "fromSide": "top", "toSide": "bottom", "route": "drop", "labelDx": 34, "labelDy": 8 },
+    { "id": "guard_answer", "from": "output_guard", "to": "answer", "variant": "emphasis", "fromSide": "top", "toSide": "bottom", "route": "drop" },
+    { "id": "deterministic_answer", "from": "trust_gate", "to": "answer", "variant": "dashed", "role": "branch", "fromSide": "top", "toSide": "bottom", "route": "drop" }
   ]
 }

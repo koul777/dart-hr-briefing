@@ -1,18 +1,37 @@
 # DART HR Briefing
 
+<p align="center"><a href="docs/assets/dart-workforce-demo.mp4"><img src="docs/assets/dart-workforce-demo.gif" width="100%" alt="DART HR Briefing 근거 추적 시연 영상" /></a></p>
+
+<p align="center"><strong>▶ GIF 티저를 클릭하면 26초 고화질 MP4가 열립니다.</strong> · <a href="docs/demo.html">브라우저용 플레이어</a></p>
+
 **DART 기업 인력·보상 비교 브리핑 도구**
 
-OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도와 보고서로 묶어 비교하고, 사용자가 직접 입력한 OpenAI API Key로 근거 기반 HR 브리핑을 이어서 질문할 수 있는 People Analytics 프로그램입니다.
+OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도와 보고서로 묶어 비교하고, **무엇을 판단할 수 있는지·무엇을 더 확인해야 하는지**를 근거와 함께 제시하는 People Analytics 프로그램입니다. AI는 사용자가 직접 실행하는 선택적 해석 보조이며, 결정 브리프와 수치는 AI 없이도 동일 입력에 동일 결과를 냅니다.
 
-<a href="https://github.com/koul777/dart-hr-briefing/raw/refs/heads/main/docs/demo.html"><img src="docs/assets/dart-workforce-demo.gif" alt="DART HR Briefing 시연 티저" /></a>
+<p align="center"><a href="https://dart-ruby-zeta.vercel.app"><strong>▶ 공개 앱 실행</strong></a> · <a href="OpenDART_HR_Analytics_4시간_커리큘럼.md">4시간 실습 커리큘럼</a> · <a href="docs/HR_DECISION_SUPPORT.md">HR 판단지원 해설</a></p>
 
-> 실제 앱을 headless Edge로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성한 시연 티저입니다. GIF를 클릭하면 [브라우저용 시연 플레이어](https://github.com/koul777/dart-hr-briefing/raw/refs/heads/main/docs/demo.html)가 열립니다. [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 별도로 내려받아 재생할 수 있습니다.
+## 현재 배포 상태
+
+| 항목 | 현재 상태 |
+| --- | --- |
+| 운영 URL | [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app) |
+| 데이터 | OpenDART 재무·직원·임원 공시, 기업 단위 집계 |
+| AI | 사용자가 입력한 OpenAI API Key로 명시적 실행 |
+| 안전장치 | 개인정보·근거·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
+| 검증 | Python 3.12 회귀 테스트 306개, 프론트엔드 JavaScript 구문 검사 |
+| 강의 자료 | 로컬 `training_deck/training_deck.pptx`, 16:9 56장·발표자 노트 56장 |
+
+`training_deck/`에는 원본 슬라이드 이미지와 생성 프롬프트까지 포함되어 용량이 크므로 Git과 Vercel 배포에서는 제외합니다. 최종 PPT는 로컬 산출물로 보존하고, 교육 내용과 재현 절차는 저장소의 커리큘럼 문서로 관리합니다.
+
+> 실제 앱을 headless Chrome으로 조작하고 자막·기능 라벨·가짜 커서·줌을 합성했습니다. 기업 선택부터 Strategy Brief의 Run ID·품질 게이트·공시 원문 링크 확인까지 실제 화면으로 보여 줍니다. README의 GIF는 2배속 13초 티저이며 [MP4 원본](docs/assets/dart-workforce-demo.mp4)은 1920×1080·30fps·26.3초입니다.
 
 ## 핵심 기능
 
 - 기업명·종목코드·DART 고유번호 검색 및 최대 8개 기업 비교
 - 재무, 직원 수, 고용 형태, 평균 근속, 평균 급여, 임원구조 통합 조회
 - Overview·Compare·Trend·People·Executives·Strategy Brief 시각화
+- 생산성·보상 지속가능성·인력구조·거버넌스·근거 연결 완전성의 결정 준비도(`ready / directional_only / blocked`)
+- 선택 기업 중앙값 위치·근거 ID·판단 한계·다음 판단 행동·다음 내부 데이터를 묶은 3개 결정 브리프
 - `AI HR 브리핑` 카드에서 OpenAI API Key와 질문을 직접 입력하는 대화형 분석
 - 사실·해석·가설·추가 검증 데이터·KPI를 구분하는 브리핑 규칙
 - CSV 내보내기, Windows 단일 실행파일, Vercel 배포 구성 제공
@@ -20,16 +39,19 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 ## 3분 빠른 시작
 
 1. OpenDART에서 발급받은 인증키를 `.env`의 `OPENDART_API_KEY`에 입력합니다.
-2. Windows에서는 `dist\DARTStructure.exe`, 개발 환경에서는 `python server.py`를 실행합니다.
+2. Windows에서는 저장소에 포함된 검증 실행 파일 `dist\\DARTStructure.exe`를,
+   개발 환경에서는 `python server.py`를 실행합니다.
 3. 기업과 기준연도·보고서를 선택하고 **인력·보상 비교**를 누릅니다.
-4. 왼쪽 `AI HR 브리핑` 카드에 본인의 OpenAI API Key와 질문을 입력합니다.
-5. **AI에게 질문하기**를 누르고, 같은 DART 근거를 바탕으로 후속 질문을 이어갑니다.
+4. **Strategy Brief**에서 결정 브리프·품질 게이트·원문 링크를 먼저 확인합니다.
+5. 추가 해석이 필요할 때만 왼쪽 `AI HR 브리핑`에 본인의 OpenAI API Key와 질문을 입력하고 **AI에게 질문하기**를 누릅니다.
 
 > 실제 인증키가 들어 있는 `.env`는 Git에서 제외됩니다. OpenAI 키도 저장소나 `localStorage`에 저장하지 않습니다.
 
 ## 이 프로그램으로 무엇을 보나요?
 
 이 프로그램은 사내 HRIS를 대체하거나 개인별 성과를 판정하는 도구가 아닙니다. 공개 공시의 집계값을 기업 단위로 비교해 다음 질문의 출발점을 제공합니다.
+
+> 레이더·산점도·순위를 포함한 모든 기업 비교는 선택 집합 안의 상대 관찰입니다. 인과관계, 개인평가, 자동 채용·보상·감축·승계 조치의 근거로 사용하지 않습니다.
 
 - 이익 체력과 평균 급여·인당 지표는 어떤 관계를 보이는가?
 - 직원 수, 정규직 비중, 평균 근속, 평균 급여가 기업별로 어떻게 다른가?
@@ -49,24 +71,25 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 
 | 탭 | 핵심 시각화 | HR 전략에서의 활용 |
 | --- | --- | --- |
-| Overview | 핵심 KPI 카드와 기업 요약 | 비교 대상의 규모·수익성 빠른 파악 |
+| Overview | 전년 변화 요약·탭별 HR readout·핵심 KPI | 무엇이 달라졌는지와 비교 범위 우선 파악 |
 | Compare | 재무 구조 비교 카드·테이블 | 이익·부채·현금·자본의 차이 확인 |
 | Trend | 연도별 선 그래프와 수치 표 | 최근 방향성과 구조 변화 탐색 |
 | People | 직원 수·정규직·근속·급여 카드 | Workforce 규모와 보상 수준 비교 |
 | Executives | 임원 구성·직위·등기·상근 현황 | 거버넌스와 리더십 구조 확인 |
-| Strategy Brief | 이익 → People Signal → 보상 프레임 | HR 전략 가설과 추가 검증 과제 도출 |
+| Strategy Brief | 이익 체력·People Signal·보상 검증 프레임 | HR 전략 가설과 추가 검증 과제 도출 |
 | Radar / Scatter / Rank | 상대 레이더·산점·순위 시각화 | 여러 지표의 패턴과 이상치 탐색 |
 
 ### 3. Strategy Brief의 시각화 계층
 
 참고 대시보드 `기업 비교 대시보드_v1.html`의 시각 언어와 정보 흐름을 반영해, Strategy Brief는 숫자를 한 번에 결론 내리기보다 실제 공시와 모델 추정을 층별로 분리합니다.
 
-1. **Profit Capacity** — 영업이익, 영업이익률, 인당 영업이익, 평균 급여를 기업 카드로 비교합니다.
-2. **Operating Profit** — 기업별 연도 영업이익 막대 그래프를 그리고, 다음연도 값은 해칭으로 구분합니다.
-3. **Average Pay** — 평균 급여 연도별 SVG 라인 차트와 다음연도 전망 구간을 표시합니다.
-4. **Pay Equity** — 성별 급여 비율·근속 차이·분석 표본을 공시된 경우에만 보여줍니다.
-5. **Internal Diagnostics** — 평가·보상 원장·설문 등 내부 데이터가 필요한 영역은 잠금 상태로 명확히 표시합니다.
-6. **Evidence / Orchestration** — DART 원문 링크, 품질 게이트, 에이전트 trace, 데이터 한계를 한 화면에서 확인합니다.
+1. **Decision Brief** — 생산성·보상 지속가능성·인력구조 질문별로 대표지표 선정 이유, 비교 위치, 근거, 신뢰 수준, 알 수 없는 것, 다음 판단 행동과 내부 데이터를 함께 보여줍니다. 선택 기업이 4개 미만이면 `ready`로 표시하지 않으며, 중앙값 위치는 산업·규모·사업모델을 보정한 외부 벤치마크가 아닙니다.
+2. **Profit Capacity** — 영업이익, 영업이익률, 인당 영업이익, 평균 급여와 계산 근거를 기업 카드로 비교합니다.
+3. **Operating Profit** — 기업별 연도 영업이익 막대 그래프를 그리고, 다음연도 값은 해칭으로 구분합니다.
+4. **Average Pay** — 평균 급여 연도별 SVG 라인 차트와 다음연도 전망 구간을 표시합니다.
+5. **Pay Equity** — 성별 급여 비율·근속 차이·분석 표본을 공시된 경우에만 보여줍니다.
+6. **Internal Diagnostics** — 평가·보상 원장·설문 등 질문별로 필요한 내부 데이터와 확인 목적을 구체적으로 표시합니다.
+7. **Evidence / Orchestration** — 기업·지표별 DART 원문 링크, 데이터 공백 분류, 품질 게이트, 에이전트 trace를 한 화면에서 확인합니다.
 
 `E` 또는 해칭으로 표시된 값은 DART 확정 공시값이 아니라 최근 공개 추세를 화면에서 단순 연장한 모델 추정입니다. 투자·인사 의사결정용 확정 예측으로 사용하지 않습니다.
 
@@ -89,9 +112,51 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 브라우저 탭을 새로 열거나 새로고침하면 키를 다시 입력해야 합니다. AI는 DART
 원자료를 대체하지 않으며 provider 오류를 성공 결과로 표시하지 않습니다.
 
+### “AI 응답이 검증 정책을 통과하지 못했습니다”가 표시될 때
+
+이 상태는 API 연결 실패가 아니라 생성된 초안이 개인정보·근거·인과·개인판단 검증에서 차단됐다는 뜻입니다. 현재 버전은 차단된 AI 원문을 폐기하고 다음의 안전한 대체 응답을 표시합니다.
+
+- 서버 evidence ledger에서 형식과 공식 DART 원문 링크가 확인된 근거만 선택
+- 기업명·지표·값과 `EV-…` 근거 ID를 함께 표시
+- 차단 사유를 사용자 친화적인 검증 항목으로 설명
+- 기업 공시 비교는 인과관계나 개인의 성과·채용·평가 판단이 아니라는 해석 한계 유지
+- 안전하게 표시할 근거가 없으면 수치나 결론을 새로 만들지 않고 명시적으로 중단
+
+따라서 같은 질문을 무조건 재시도하기보다, 화면에 표시된 근거 ID와 원문을 확인하고 “확인된 수치만 비교해줘”, “인과가 아니라 가설과 추가 검증 데이터로 구분해줘”처럼 질문 범위를 좁히는 것이 좋습니다.
+
+### Evidence-first Agent Orchestration v2
+
+단일 연도 AI 분석은 `source_snapshot → input_validator → 병렬 normalizer →
+quality_auditor → benchmark_calculator → privacy_guard → evidence_ledger →
+decision_support → provider_policy → strategy_interpreter → provider_output_guard → response_guard` 순서로
+실행됩니다.
+
+- 각 지표는 결정적인 `EV-…` ID, 원천 컴포넌트, 접수번호, 원자료 지문을 갖습니다.
+- `decision_support`는 비교 가능한 근거 수와 관련 품질만으로 판단 준비도·선택 기업 중앙값 차이·다음 판단 행동·다음 내부 데이터를 결정론적으로 만듭니다. 모든 후보 지표가 비교 가능해도 대표지표 표본이 4개 미만이면 최대 `directional_only`입니다.
+- AI provider에는 정책상 제외 관측치가 없을 때 이 결정지원 계층을 `available`로 전달합니다. 제외 관측치가 하나라도 있으면 허용 관측치만으로 다시 계산한 브리프를 `limited`로 전달해, 안전장치는 유지하면서 화면의 전체 브리프와 AI의 실제 근거 범위를 혼동하지 않게 합니다.
+- `policy.mode=limited`는 부분 품질만으로도 설정될 수 있습니다. 이때 제외 기업이 0개이면 `decision_support_status=available`과 함께 선택 기업 전체 범위를 유지하며, 화면은 이를 “보수적 제한”으로 풀어 표시합니다. 실제 제외가 있을 때만 허용 기업 범위로 브리프를 다시 계산합니다.
+- 각 지표는 후행 지표, 조기점검 대리 지표, 벤치마크, 데이터 공백으로 구분하고 해석 한계를 함께 제공합니다.
+- 재무·직원·임원·미등기임원 보수의 출처를 컴포넌트별로 분리합니다.
+- 파생 지표는 필요한 모든 원천 컴포넌트의 접수번호가 있을 때만 AI 컨텍스트에 포함합니다.
+- 한 단계가 실패하면 의존 단계가 `blocked`로 trace에 남고 AI 호출은 진행하지 않습니다.
+- 개인정보, 허용되지 않은 evidence ID, 근거 없는 숫자, 인용 값과 모순되는 숫자, 근거 없는 인과 단정, 가공 인물에 대한 개인 판단이 AI
+  출력에 있으면 provider 결과를 `rejected`로 폐기합니다.
+- 비표준 JSON 수치, 안전하지 않은 유니코드 제어문자, 256KiB를 넘는 AI 출력도 폐기합니다.
+- 연도 범위 AI 생성은 기간 evidence 계약이 준비될 때까지 fail-closed로 비활성화합니다.
+- v2 응답은 기본값으로 번들 JSON Schema와 결정지원 근거 참조 무결성을 모두 검증합니다.
+- 정정공시 최신성 미검증 경고는 결정 브리프와 readiness matrix보다 먼저 노출해 `ready`를 확정 판단으로 오해하지 않게 합니다.
+
+응답 계약은 [`schemas/workforce_orchestration_v2.schema.json`](schemas/workforce_orchestration_v2.schema.json),
+오프라인 평가기는 [`orchestration_evaluation.py`](orchestration_evaluation.py), 실행 흐름은
+[`orchestration-dart-claude.html`](orchestration-dart-claude.html)에서 확인할 수 있습니다.
+HR 사용자가 readiness·confidence·선택 cohort·금지 용도를 해석하는 기준은
+[`docs/HR_DECISION_SUPPORT.md`](docs/HR_DECISION_SUPPORT.md)에 정리했습니다.
+
 ## 공개 URL(Vercel)에서 사용하는 방법
 
 웹 배포형은 다음 흐름을 기준으로 사용합니다.
+
+운영 주소는 [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app)입니다. `/api/health`에서 앱 ID, OpenDART 키 구성 여부, strict schema 상태를 확인할 수 있습니다.
 
 1. 운영자가 Vercel 서버 환경변수에 `OPENDART_API_KEY`를 설정합니다. 이 키는 브라우저에 노출하거나 저장소에 커밋하지 않습니다.
 2. 사용자가 Vercel URL에 접속합니다.
@@ -107,11 +172,26 @@ AI 자동 해석만 제한됩니다.
 
 > 공개 서비스에서는 DART 호출량 제한, 사용자별 요청 제한, API 키 미노출 정책을 함께 적용해야 합니다. 인증키를 query string이나 프론트엔드 코드에 포함하지 않습니다.
 
+현재 내장 캐시와 요청 제한은 프로세스 단위입니다. 로컬 실행과 단일 장기 실행 프로세스에는
+유효하지만, Vercel처럼 여러 인스턴스가 생성되는 serverless 환경에서는 인스턴스 전체의
+분산 한도를 보장하지 않습니다. 공개 운영 전에는 외부 KV/Redis/API gateway 기반 분산
+rate limit과 비용 한도를 별도로 적용해야 합니다. Strategy 탭 조회는 AI provider를 호출하지
+않으며, 유료 AI 호출은 사용자가 `AI에게 질문하기`를 명시적으로 누른 POST 요청에서만 발생합니다.
+
 배포 준비 파일인 `api/index.py`, `vercel.json`, `.python-version`이 포함되어
 있습니다. GitHub 저장소를 Vercel 프로젝트에 연결한 뒤 `OPENDART_API_KEY`와
 `OPENAI_MODEL`을 서버 환경변수로 등록하면 동일한 앱을 배포할 수 있습니다.
 `OPENAI_API_KEY` 서버 환경변수는 자동화 호출용 선택 사항이며, 일반 사용자는
 AI HR 브리핑 카드에 자신의 키와 질문을 직접 입력합니다.
+
+운영 키는 `.env` 파일을 업로드하지 말고 Vercel의 암호화된 환경변수로 등록합니다.
+
+```powershell
+vercel env add OPENDART_API_KEY production --sensitive
+vercel deploy --prod
+```
+
+`.vercelignore`는 `.env*`, PPT·보고서·영상·테스트·로컬 빌드 산출물을 제외합니다. 현재 배포에 필요한 소스는 23개 파일, 약 2.3MB이며 서버 함수 번들만 생성됩니다. 배포 후에는 운영 URL의 `/api/health`가 `api_key_configured: true`와 `strict_schema_enabled: true`를 반환하는지 확인합니다.
 
 ## 데이터 범위
 
@@ -128,27 +208,36 @@ AI HR 브리핑 카드에 자신의 키와 질문을 직접 입력합니다.
 
 ### 가장 빠른 실행
 
-Windows 배포 패키지를 실행합니다.
+Windows 검증 실행 파일을 실행합니다. 공개 저장소를 새로 clone한 환경에서도 아래 경로를
+그대로 사용할 수 있습니다.
 
 ```powershell
+$env:OPENDART_API_KEY = "발급받은 OpenDART 인증키"
 .\dist\DARTStructure.exe
 ```
 
-프로그램은 기본적으로 `http://127.0.0.1:8765`에서 실행됩니다.
-실행파일은 실행파일이 있는 폴더의 `.env`를 먼저 확인하고, PowerShell에서
-실행한 경우 현재 작업 폴더의 `.env`도 확인합니다.
+프로그램은 기본적으로 `http://127.0.0.1:8765`에서 실행됩니다. 다른 프로그램이 이 포트를
+사용 중이면 중복 바인딩하지 않고 다음 빈 로컬 포트를 선택하며, 방금 시작한 DART 인스턴스의
+앱 ID·버전·빌드 ID를 확인한 뒤 그 주소만 브라우저에서 엽니다. `PORT` 환경변수를 명시한
+자동화 환경에서는 지정 포트를 사용할 수 없을 때 다른 포트로 이동하지 않고 명확히 실패합니다.
+실행 전 `OPENDART_API_KEY` 프로세스 환경변수를 설정하거나 실행 파일의 `dist` 폴더에 `.env`를 둡니다.
+실행파일은 실행파일이 있는 폴더의 `.env`만 신뢰합니다. 폴더명이 정확히 `dist`이고
+상위에 `DARTStructure.spec`이 있는 표준 소스 배치에서는 호환성을 위해 상위 프로젝트의 `.env`도 확인하지만, 임의의 현재 작업
+폴더 `.env`는 읽지 않습니다. 동일 키의 프로세스 환경변수는 `.env`보다 우선합니다.
+화면 왼쪽 아래와 `/api/health`에서 현재 버전·빌드 ID·실제 포트를 확인할 수 있습니다.
 
 ### 개발 모드
 
 Python 3.11 이상을 권장합니다.
 
 ```powershell
+python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 # .env의 OPENDART_API_KEY에 OpenDART 인증키 입력
 python server.py
 ```
 
-개발 환경에 필요한 Python 패키지는 현재 실행 환경에 설치되어 있어야 하며, 배포 실행에는 별도 Python 설치가 필요하지 않습니다.
+위 editable 설치가 개발·품질 의존성을 함께 준비합니다. CI 매트릭스도 같은 `.[dev]` 경로를 Python 3.11–3.14에서 검증하도록 구성했으며, Windows 배포 실행에는 별도 Python 설치가 필요하지 않습니다.
 
 `.env`에는 OpenDART 키를 필수로 넣습니다. AI 브리핑 키는 실행 후 왼쪽 입력란에
 직접 넣는 방식이 기본이며, 자동화 호출이 필요한 경우에만 OpenAI 키를 환경변수로
@@ -161,10 +250,28 @@ OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.6-luna
 OPENAI_TIMEOUT_SECONDS=60
 OPENAI_MAX_OUTPUT_TOKENS=1800
+DART_CACHE_TTL_SECONDS=300
+DART_CACHE_MAX_ENTRIES=512
+DART_CACHE_MAX_BYTES=67108864
+DART_DATA_DIR=
+DART_RETRY_ATTEMPTS=3
+DART_RETRY_BASE_DELAY_MS=250
+DART_RATE_LIMIT_PER_MINUTE=30
+DART_RATE_LIMIT_MAX_CLIENTS=4096
+DART_OPEN_BROWSER=true
+DART_STRICT_ORCHESTRATION_SCHEMA=true
 CLAUDE_MCP_GATEWAY_URL=
 CLAUDE_MCP_GATEWAY_TOKEN=
 CLAUDE_MCP_GATEWAY_TIMEOUT_SECONDS=20
 ```
+
+`DART_DATA_DIR`가 비어 있으면 소스 실행은 프로젝트 `data`, frozen 실행은
+`%LOCALAPPDATA%\DART-HR-Briefing`, Vercel은 `/tmp/dart-workforce`를 사용합니다.
+
+비교 조회 API는 단일 `corp_code`가 아니라 `corp_codes` 계약을 사용합니다.
+GET `/api/financials`, `/api/people`, `/api/people/history`, `/api/workforce/orchestration`는
+쉼표로 구분한 `corp_codes` 쿼리 문자열을 받고, POST `/api/analysis`,
+`/api/analysis/context`는 JSON 배열 또는 문자열 `corp_codes`를 받습니다.
 
 AI HR 브리핑 카드에 OpenAI 키를 입력하면 AI 분석 질문과 Strategy Brief에서 OpenDART
 수치와 출처만을 근거로 한국어 HR 브리핑을 생성합니다. 사용자가 입력한 키는
@@ -185,38 +292,47 @@ AI 브리핑의 항목과 판단 원칙은 [`HR_BRIEFING_RULES.md`](HR_BRIEFING_
 
 ```powershell
 python -m unittest discover -v
-ruff check server.py agent_orchestration.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestrator.py test_*.py
-python -m py_compile server.py agent_orchestration.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestrator.py
+python -m coverage run -m unittest discover
+python -m coverage report -m
+python -m ruff check .
+python -m compileall -q .
 node --check static/app.js
+node --check tools/qa_orchestration_v2.js
+python tools/benchmark_orchestration.py --iterations 100 --warmups 5
 ```
 
-배포 패키지 smoke test에서는 health API, 재무·People context, AI prompt handoff, Strategy Brief 정적 자산을 확인했습니다. 시각 QA 체크리스트와 제한사항은 [`reports/visual_qa_20260821.md`](reports/visual_qa_20260821.md)에 기록되어 있습니다.
+현재 Python 3.12 기준 회귀 306개, 제품 모듈 branch coverage 84%, 핵심 v2 DAG 92%를
+기준으로 관리합니다. `jsonschema`는 핵심 런타임 의존성이며 소스·패키지 모두 strict schema를
+기본으로 검증합니다. 지원 Python 버전별 CI도 같은 306개 계약을 실행해야 합니다.
+격리 PyInstaller smoke에서는 `tools/packaged_runtime_smoke.py`로 strict schema를 켠 실제 OpenDART schema v2 응답과 evidence 41/41건 원문 연결을
+확인했고, headless Edge에서는 공식 citation 링크와 unsafe URL 비링크를 비롯해 원자적 비교 커밋,
+기간 변경 시 AI 취소, 숫자 경계, CSV 수식 주입 방어를 검증했습니다.
+상세 기록은 [`reports/ai_agent_orchestration_v2_20260830.md`](reports/ai_agent_orchestration_v2_20260830.md)에 있습니다.
 
 ## 시연 영상 제작
 
-시연 영상은 [demo-video-skill](https://github.com/Kminer2053/demo-video-skill)의 오픈소스 제작 원칙을 적용했습니다. 실제 앱을 Playwright headless 브라우저로 조작하면서 다음 흐름을 녹화합니다.
+시연 영상은 [demo-video-skill](https://github.com/Kminer2053/demo-video-skill)을 Codex 스킬 디렉터리에 실제 설치한 뒤, 설치본의 고정 절차를 적용해 제작했습니다. 실제 앱을 Playwright headless 브라우저로 조작하면서 다음 흐름을 녹화합니다.
 
 1. 기업 검색·선택
 2. 삼성전자·SK하이닉스 DART 비교
-3. KPI·막대 그래프 시각화
-4. Strategy Brief의 이익·급여·Pay Equity 흐름
-5. OpenAI API Key 직접 입력과 대화형 AI HR 브리핑
+3. Strategy Brief의 DART 실제값·모델 추정 구분
+4. Run ID·품질 게이트·공시 원문 링크·에이전트 TRACE 확인
 
-재현하려면 개발 서버를 먼저 실행한 뒤, Node.js·`playwright-core`·Edge·`ffmpeg`가 준비된 환경에서 실행합니다.
+재현하려면 개발 서버를 먼저 실행한 뒤, Node.js·`playwright-core`·Chrome·`ffmpeg`가 준비된 환경에서 대표 씬 `3`을 캡처합니다. 캡처기는 비교 조회 대기 구간의 시작·종료 시점을 JSON으로 출력하므로 그 구간만 6배속 처리할 수 있습니다.
 
 ```powershell
-$env:APP = "http://127.0.0.1:8768"
+$env:APP = "http://127.0.0.1:8765"
 $env:SCR = "C:\workspace\dart\video_work"
-$env:CHROME_PATH = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+$env:CHROME_PATH = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 $env:PLAYWRIGHT_CORE = "C:\workspace\dart\video_work\node_modules\playwright-core"
-node tools/capture_dart_demo.js all
+node tools/capture_dart_demo.js 3
 ```
 
-녹화 원본과 중간 산출물은 `video_work/`에 두며 저장소에는 포함하지 않습니다. 최종 배포용 MP4·GIF만 `docs/assets/`에 저장합니다.
+녹화 원본과 3×3 몽타주·스팟 프레임은 `video_work/`에 두며 저장소에는 포함하지 않습니다. 대기 구간 압축 후 몽타주 육안검사와 5개 시점 스팟검사를 통과한 최종 MP4·GIF만 `docs/assets/`에 저장합니다. 실제 재생을 확인한 뒤 자막이나 줌 위치를 수정해야 한다면 씬 `3`만 다시 렌더하면 됩니다.
 
 ### 영상이 README에서 바로 재생되지 않을 때
 
-GitHub README는 MP4를 일반적인 `<video>` 플레이어로 자동 재생하지 않을 수 있습니다. GIF는 README에서 바로 보이고, 전체 영상은 [raw 시연 플레이어](https://github.com/koul777/dart-workforce-intelligence/raw/refs/heads/main/docs/demo.html)를 열거나 [`docs/demo.html`](docs/demo.html)을 내려받아 브라우저로 열면 재생됩니다.
+GitHub README는 MP4를 일반적인 `<video>` 플레이어로 자동 재생하지 않을 수 있습니다. GIF는 README에서 바로 보이고, 전체 영상은 [MP4 원본](docs/assets/dart-workforce-demo.mp4)을 열거나 [`docs/demo.html`](docs/demo.html)을 내려받아 브라우저로 열면 재생됩니다.
 
 ```powershell
 python -m http.server --directory docs 8000
@@ -225,9 +341,13 @@ python -m http.server --directory docs 8000
 
 ## 문서
 
+- [`OpenDART_HR_Analytics_4시간_커리큘럼.md`](OpenDART_HR_Analytics_4시간_커리큘럼.md) — 2026년 9월 30일 WEEK 2, 4시간 실습형 강의 구성
 - [`DART_WORKFORCE_INTELLIGENCE_PLAN.md`](DART_WORKFORCE_INTELLIGENCE_PLAN.md) — 제품 범위·데이터 계약·완료 기준
 - [`DART_WORKFORCE_INTELLIGENCE_RUNBOOK.md`](DART_WORKFORCE_INTELLIGENCE_RUNBOOK.md) — 실행·시각 QA·AI gateway 점검 절차
+- [`docs/HR_DECISION_SUPPORT.md`](docs/HR_DECISION_SUPPORT.md) — readiness·confidence·대표 지표·AI 전달 경계
 - [`reports/visual_qa_20260821.md`](reports/visual_qa_20260821.md) — 자동 검증 및 브라우저 캡처 QA 기록
+- [`reports/ai_agent_orchestration_v2_20260830.md`](reports/ai_agent_orchestration_v2_20260830.md) — Codex–Claude 토론, 구현, 검증, 후속 로드맵
+- [`reports/hr_analytics_maximization_20260831.md`](reports/hr_analytics_maximization_20260831.md) — Claude·3개 전문 에이전트 재감리, 다중 지표 결정지원, strict 패키지 검증
 - [`orchestration-dart-claude.html`](orchestration-dart-claude.html) — DART·Claude MCP 오케스트레이션 참고 시각화
 
 ## 주의사항

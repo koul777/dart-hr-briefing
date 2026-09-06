@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dart-hr-briefing"
+version = "0.2.0"
+description = "Evidence-first OpenDART workforce and compensation briefing"
+requires-python = ">=3.11"
+dependencies = [
+  "jsonschema>=4.23,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "coverage>=7.13,<8",
+  "jsonschema>=4.23,<5",
+  "ruff>=0.12,<1",
+]
+build = [
+  "pyinstaller>=6,<7",
+  "jsonschema>=4.23,<5",
+]
+
+[tool.setuptools]
+packages = ["api"]
+py-modules = [
+  "agent_orchestration",
+  "analysis_contract",
+  "claude_mcp_adapter",
+  "openai_responses_adapter",
+  "orchestration_evaluation",
+  "orchestrator",
+  "runtime_controls",
+  "server",
+  "workforce_analytics",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.coverage.run]
+branch = true
+source = [
+  "analysis_contract",
+  "agent_orchestration",
+  "claude_mcp_adapter",
+  "openai_responses_adapter",
+  "orchestration_evaluation",
+  "orchestrator",
+  "runtime_controls",
+  "server",
+  "workforce_analytics",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

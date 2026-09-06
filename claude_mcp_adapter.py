@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol
@@ -35,6 +36,11 @@ MCP_GATEWAY_TIMEOUT_ENV = "CLAUDE_MCP_GATEWAY_TIMEOUT_SECONDS"
 MCP_GATEWAY_CALL_PATH = "/v1/mcp/call"
 MCP_GATEWAY_CONTRACT_VERSION = "1"
 DEFAULT_GATEWAY_TIMEOUT_SECONDS = 20.0
+MAX_GATEWAY_TIMEOUT_SECONDS = 180.0
+MAX_GATEWAY_REQUEST_BYTES = 1024 * 1024
+MAX_GATEWAY_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_GATEWAY_IDENTIFIER_CHARS = 128
+SAFE_GATEWAY_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 MCP_GATEWAY_CALL_CONTRACT: Mapping[str, Any] = {
     "transport": "HTTP gateway explicitly provisioned outside the Claude Code session",
@@ -97,12 +103,14 @@ class MCPCallRequest:
     request_id: str = field(default_factory=lambda: _new_id("mcp"))
 
     def __post_init__(self) -> None:
-        if not self.server.strip():
+        if not isinstance(self.server, str) or not self.server.strip() or len(self.server) > MAX_GATEWAY_IDENTIFIER_CHARS:
             raise ValueError("server must not be empty")
-        if not self.tool.strip():
+        if not isinstance(self.tool, str) or not self.tool.strip() or len(self.tool) > MAX_GATEWAY_IDENTIFIER_CHARS:
             raise ValueError("tool must not be empty")
-        if not self.request_id.strip():
+        if not isinstance(self.request_id, str) or not self.request_id.strip() or len(self.request_id) > MAX_GATEWAY_IDENTIFIER_CHARS:
             raise ValueError("request_id must not be empty")
+        if any(ord(character) < 32 for value in (self.server, self.tool, self.request_id) for character in value):
+            raise ValueError("MCP identifiers must not contain control characters")
 
     def to_wire_dict(self) -> dict[str, Any]:
         """Return the gateway request body, without authentication material."""
@@ -312,10 +320,32 @@ class MCPGatewayConfig:
 
     def __post_init__(self) -> None:
         _validate_gateway_url(self.base_url)
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be a finite positive number")
+        if (
+            not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+            or self.timeout_seconds > MAX_GATEWAY_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                f"timeout_seconds must be between 0 and {MAX_GATEWAY_TIMEOUT_SECONDS:g}"
+            )
         if not self.call_path.startswith("/"):
             raise ValueError("call_path must start with '/'")
+        if (
+            "?" in self.call_path
+            or "#" in self.call_path
+            or ".." in self.call_path
+            or "\\" in self.call_path
+            or any(ord(character) < 32 for character in self.call_path)
+        ):
+            raise ValueError("call_path must not contain traversal, query, or fragment syntax")
+        if self.token and (
+            len(self.token) > 512
+            or any(
+                character.isspace() or ord(character) < 32 or ord(character) == 127
+                for character in self.token
+            )
+        ):
+            raise ValueError("gateway token format is invalid")
 
     @classmethod
     def from_environment(
@@ -356,12 +386,20 @@ class MCPGatewayConfig:
 
 def _validate_gateway_url(value: str) -> None:
     parsed = urlparse(value)
+    if any(ord(character) < 32 for character in value):
+        raise ValueError("base_url must not contain control characters")
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("base_url must be an absolute http(s) URL")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("base_url port is invalid") from exc
     if parsed.username or parsed.password:
         raise ValueError("base_url must not contain userinfo")
     if parsed.query or parsed.fragment:
         raise ValueError("base_url must not contain a query or fragment")
+    if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("remote gateway URLs must use https")
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,11 +419,18 @@ class HttpMCPGatewayAdapter:
                 request.to_wire_dict(),
                 ensure_ascii=False,
                 separators=(",", ":"),
+                allow_nan=False,
             ).encode("utf-8")
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
             return MCPCallResult.failure(
                 "invalid_request",
                 "MCP arguments are not JSON serializable.",
+                request_id=request.request_id,
+            )
+        if len(body) > MAX_GATEWAY_REQUEST_BYTES:
+            return MCPCallResult.failure(
+                "request_too_large",
+                "MCP request exceeds the configured size limit.",
                 request_id=request.request_id,
             )
 
@@ -408,10 +453,11 @@ class HttpMCPGatewayAdapter:
 
         try:
             with urlopen(http_request, timeout=self.config.timeout_seconds) as response:
-                raw_response = response.read()
+                raw_response = response.read(MAX_GATEWAY_RESPONSE_BYTES + 1)
                 http_status = getattr(response, "status", None)
         except HTTPError as exc:
             status = int(exc.code)
+            exc.close()
             if status >= 500:
                 return MCPCallResult.unavailable(
                     "MCP gateway is unavailable.",
@@ -429,6 +475,14 @@ class HttpMCPGatewayAdapter:
                 request_id=request.request_id,
             )
 
+        if len(raw_response) > MAX_GATEWAY_RESPONSE_BYTES:
+            return MCPCallResult.failure(
+                "gateway_response_too_large",
+                "MCP gateway response exceeds the configured size limit.",
+                request_id=request.request_id,
+                http_status=http_status,
+            )
+
         if http_status is not None and not 200 <= http_status < 300:
             return MCPCallResult.failure(
                 "gateway_http_error",
@@ -438,8 +492,16 @@ class HttpMCPGatewayAdapter:
             )
 
         try:
-            document = json.loads(raw_response.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            document = json.loads(
+                raw_response.decode("utf-8"),
+                parse_constant=_reject_nonfinite_json,
+            )
+            json.dumps(
+                document,
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError, ValueError, RecursionError):
             return MCPCallResult.failure(
                 "invalid_gateway_response",
                 "MCP gateway returned a non-JSON response.",
@@ -456,7 +518,14 @@ class HttpMCPGatewayAdapter:
             )
 
         response_request_id = document.get("request_id")
-        request_id = response_request_id if isinstance(response_request_id, str) else request.request_id
+        if response_request_id is not None and response_request_id != request.request_id:
+            return MCPCallResult.failure(
+                "gateway_request_id_mismatch",
+                "MCP gateway response correlation failed.",
+                request_id=request.request_id,
+                http_status=http_status,
+            )
+        request_id = request.request_id
         if document["ok"]:
             return MCPCallResult.success(
                 document.get("result"),
@@ -466,7 +535,11 @@ class HttpMCPGatewayAdapter:
 
         error = document.get("error")
         error_code = "gateway_error"
-        if isinstance(error, dict) and isinstance(error.get("code"), str) and error["code"].strip():
+        if (
+            isinstance(error, dict)
+            and isinstance(error.get("code"), str)
+            and SAFE_GATEWAY_ERROR_CODE.fullmatch(error["code"])
+        ):
             error_code = error["code"]
         return MCPCallResult.failure(
             error_code,
@@ -479,6 +552,10 @@ class HttpMCPGatewayAdapter:
         # Prompt handoff remains a host/orchestrator concern.  There is no
         # implied gateway endpoint for sending prompts in this contract.
         return payload
+
+
+def _reject_nonfinite_json(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
 
 def create_claude_code_mcp_adapter(
@@ -519,6 +596,8 @@ __all__ = [
     "MCP_GATEWAY_TIMEOUT_ENV",
     "MCP_GATEWAY_TOKEN_ENV",
     "MCP_GATEWAY_URL_ENV",
+    "MAX_GATEWAY_REQUEST_BYTES",
+    "MAX_GATEWAY_RESPONSE_BYTES",
     "MCPUnavailable",
     "PromptHandoffPayload",
     "UnavailableClaudeCodeMCPAdapter",

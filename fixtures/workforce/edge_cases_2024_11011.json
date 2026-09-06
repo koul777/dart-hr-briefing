@@ -1,0 +1,82 @@
+{
+  "fixture_version": 1,
+  "description": "재무 전용·무자료·원천 실패가 섞인 비개인 오케스트레이션 회귀 fixture",
+  "expectations": {
+    "status": "partial",
+    "policy_status": "allowed",
+    "policy_mode": "limited",
+    "quality_by_corp_code": {
+      "90000003": "partial",
+      "90000004": "no_data",
+      "90000005": "error"
+    },
+    "eligible_corp_codes": [
+      "90000003"
+    ]
+  },
+  "observations": [
+    {
+      "company": {
+        "corp_code": "90000003",
+        "corp_name": "테스트재무",
+        "stock_code": "900003"
+      },
+      "year": "2024",
+      "report_code": "11011",
+      "employee_rows": [],
+      "executive_rows": [],
+      "unregistered_pay_rows": [],
+      "financials": {
+        "assets": 120000000000,
+        "liabilities": 40000000000,
+        "equity": 80000000000,
+        "revenue": 95000000000,
+        "operating_profit": 7000000000
+      },
+      "source_by_component": {
+        "financial_status": [
+          "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250331000003"
+        ]
+      }
+    },
+    {
+      "company": {
+        "corp_code": "90000004",
+        "corp_name": "테스트무자료",
+        "stock_code": "900004"
+      },
+      "year": "2024",
+      "report_code": "11011",
+      "employee_rows": [],
+      "executive_rows": [],
+      "unregistered_pay_rows": [],
+      "financials": {},
+      "source_urls": []
+    },
+    {
+      "company": {
+        "corp_code": "90000005",
+        "corp_name": "테스트원천실패",
+        "stock_code": "900005"
+      },
+      "year": "2024",
+      "report_code": "11011",
+      "employee_rows": [],
+      "executive_rows": [],
+      "unregistered_pay_rows": [],
+      "financials": {
+        "revenue": 50000000000,
+        "operating_profit": 3000000000
+      },
+      "source_urls": [
+        "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250331000005"
+      ],
+      "errors": [
+        {
+          "source": "employee_status",
+          "message": "fixture source unavailable"
+        }
+      ]
+    }
+  ]
+}

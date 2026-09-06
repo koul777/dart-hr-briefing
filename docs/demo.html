@@ -13,27 +13,37 @@
       h1 { margin: 10px 0 8px; font-size: clamp(30px, 5vw, 58px); letter-spacing: -.06em; }
       p { color: #aeb8c7; line-height: 1.6; }
       .stage { margin-top: 28px; padding: 12px; background: #151b24; border: 1px solid #2a3544; border-radius: 22px; box-shadow: 0 24px 80px #0008; }
+      .journey { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 24px; }
+      .journey article { padding: 16px; border: 1px solid #2a3544; border-radius: 14px; background: #151b24cc; }
+      .journey strong { display: block; color: #f5f7fb; font-size: 15px; }
+      .journey span { display: block; margin-top: 7px; color: #aeb8c7; font-size: 13px; line-height: 1.55; }
       video { display: block; width: 100%; border-radius: 14px; background: #080b10; }
       .footer { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
       .footer span { color: #7f8ca0; font-size: 13px; }
       a { color: #77a5ff; text-decoration: none; }
       a:hover { text-decoration: underline; }
       .fallback { margin-top: 18px; color: #8e9aac; font-size: 13px; }
+      @media (max-width: 720px) { body { padding: 20px; } .journey { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
     <main>
       <div class="eyebrow">DART / WORKFORCE INTELLIGENCE</div>
       <h1>공시 데이터를 HR 전략 영상으로 읽습니다.</h1>
-      <p>실제 앱을 조작하면서 기업 비교, 재무 시각화, Strategy Brief, AI 분석 handoff 흐름을 녹화한 제품 시연 영상입니다.</p>
+      <p>실제 앱을 조작하면서 기업 선택, DART 비교, Strategy Brief, Run ID·품질 게이트·공시 원문 링크 확인 흐름을 녹화한 제품 시연 영상입니다.</p>
+      <section class="journey" aria-label="권장 의사결정 흐름">
+        <article><strong>1. 무엇이 변했나</strong><span>Overview에서 전년 변화와 수신 범위를 먼저 확인합니다.</span></article>
+        <article><strong>2. 지금 판단 가능한가</strong><span>Strategy의 readiness·대표 지표·선택 기업 중앙값을 확인합니다.</span></article>
+        <article><strong>3. 무엇을 더 확인할까</strong><span>근거 원문·판단 한계·다음 내부 HR 데이터를 검증합니다.</span></article>
+      </section>
       <section class="stage">
-        <video controls autoplay muted loop playsinline poster="./assets/dashboard-home.png">
+        <video controls autoplay muted loop playsinline poster="./assets/dart-workforce-demo-poster.png">
           <source src="./assets/dart-workforce-demo.mp4" type="video/mp4" />
           <a href="./assets/dart-workforce-demo.mp4">MP4 영상 열기</a>
         </video>
       </section>
       <div class="footer">
-        <span>1:39 · 1920×1080 · H.264</span>
+        <span>0:26 · 1920×1080 · 30fps · H.264</span>
         <a href="./assets/dart-workforce-demo.gif">GIF 티저 보기</a>
       </div>
       <p class="fallback">GitHub README에서 MP4가 바로 재생되지 않으면 이 파일을 내려받아 브라우저로 열거나, 저장소 루트에서 <code>python -m http.server --directory docs</code>를 실행한 뒤 <code>/demo.html</code>로 접속하세요.</p>

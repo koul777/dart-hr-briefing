@@ -6,16 +6,16 @@
 //   node tools/capture_dart_demo.js all
 //
 // Environment:
-//   APP=http://127.0.0.1:8768
+//   APP=http://127.0.0.1:8765
 //   SCR=C:\workspace\dart\video_work
-//   CHROME_PATH=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+//   CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
 const fs = require("fs");
 const path = require("path");
 
 const SCR = process.env.SCR || path.resolve(__dirname, "..", "video_work");
 const PLAYWRIGHT_CORE = process.env.PLAYWRIGHT_CORE || path.join(SCR, "node_modules", "playwright-core");
 const { chromium } = require(PLAYWRIGHT_CORE);
-const APP = process.env.APP || "http://127.0.0.1:8768";
+const APP = process.env.APP || "http://127.0.0.1:8765";
 const RAW = path.join(SCR, "clips_raw");
 fs.mkdirSync(RAW, { recursive: true });
 
@@ -62,7 +62,7 @@ async function installOverlay(page, label) {
   }, label);
 }
 
-function helpers(page) {
+function helpers(page, captureStartedAt) {
   const box = (selector, text) => page.evaluate(({ selector, text }) => {
     const nodes = [...document.querySelectorAll(selector)];
     const node = text ? nodes.find((item) => (item.textContent || "").includes(text)) : nodes[0];
@@ -96,7 +96,8 @@ function helpers(page) {
     await page.evaluate(() => window.__unzoom());
     await sleep(900);
   };
-  return { box, move, moveClick, subtitle, off, zoom, unzoom };
+  const elapsedMs = () => Date.now() - captureStartedAt;
+  return { box, move, moveClick, subtitle, off, zoom, unzoom, elapsedMs };
 }
 
 async function addCompany(page, h, name) {
@@ -112,6 +113,7 @@ async function prepareComparison(page, h) {
   await addCompany(page, h, "삼성전자");
   await addCompany(page, h, "SK하이닉스");
   await page.selectOption("#yearSelect", "2024");
+  const waitStartMs = h.elapsedMs();
   await h.moveClick(await h.box("#compareButton"));
   const started = Date.now();
   await page.waitForFunction(() => {
@@ -119,7 +121,11 @@ async function prepareComparison(page, h) {
     const coverage = document.querySelector("#dataCoverage")?.textContent || "";
     return dashboard && !dashboard.classList.contains("hidden") && coverage.includes("개 기업 수신");
   }, { timeout: 120000 });
-  return Date.now() - started;
+  return {
+    waitMs: Date.now() - started,
+    waitStartMs,
+    waitEndMs: h.elapsedMs(),
+  };
 }
 
 async function openTab(page, h, name, readySelector) {
@@ -142,6 +148,7 @@ async function captureScene(number, label, sequence) {
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
     recordVideo: { dir: RAW, size: { width: 1920, height: 1080 } },
+    bypassCSP: true,
   });
   const page = await context.newPage();
   const before = new Set(fs.readdirSync(RAW));
@@ -154,8 +161,9 @@ async function captureScene(number, label, sequence) {
     });
     await page.goto(APP, { waitUntil: "networkidle", timeout: 60000 });
     await installOverlay(page, label);
-    const h = helpers(page);
-    const waitMs = await sequence(page, h);
+    const captureStartedAt = Date.now();
+    const h = helpers(page, captureStartedAt);
+    const timing = await sequence(page, h);
     await h.off();
     await context.close();
     await browser.close();
@@ -165,7 +173,7 @@ async function captureScene(number, label, sequence) {
     const target = path.join(RAW, `scene-${String(number).padStart(2, "0")}.webm`);
     if (fs.existsSync(target)) fs.unlinkSync(target);
     fs.renameSync(source, target);
-    console.log(JSON.stringify({ scene: number, waitMs, webm: target }));
+    console.log(JSON.stringify({ scene: number, ...timing, webm: target }));
   } catch (error) {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
@@ -186,53 +194,55 @@ const SCENES = {
       await sleep(1100);
       await h.zoom(1.2, 680, 430, 1600);
       await h.unzoom();
-      return 0;
+      return { waitMs: 0, waitStartMs: 0, waitEndMs: 0 };
     },
   },
   1: {
     label: "1. 기업 비교",
     run: async (page, h) => {
       await h.subtitle("같은 기준연도에서 기업의 이익·부채·현금 구조를 비교합니다.");
-      const waitMs = await prepareComparison(page, h);
+      const timing = await prepareComparison(page, h);
       await h.subtitle("OpenDART 실제값으로 비교 화면을 구성합니다.", 1800);
       await h.zoom(1.22, 1260, 510, 2200);
       await h.unzoom();
-      return waitMs;
+      return timing;
     },
   },
   2: {
     label: "2. 재무 시각화",
     run: async (page, h) => {
       await h.subtitle("핵심 KPI와 기업별 막대 그래프로 구조 차이를 한눈에 읽습니다.");
-      const waitMs = await prepareComparison(page, h);
+      const timing = await prepareComparison(page, h);
       await openTab(page, h, "Overview", ".visual-grid");
       await page.evaluate(() => document.querySelector(".visual-grid")?.scrollIntoView({ block: "center" }));
       await h.subtitle("자산 규모·영업이익률을 같은 DART 기준으로 비교합니다.", 1800);
       await h.zoom(1.3, 1220, 480, 2400);
       await h.unzoom();
-      return waitMs;
+      return timing;
     },
   },
   3: {
     label: "3. Strategy Brief",
     run: async (page, h) => {
-      await h.subtitle("이익 체력에서 평균 급여·Pay Equity까지 한 흐름으로 봅니다.");
-      const waitMs = await prepareComparison(page, h);
+      await h.subtitle("공시 숫자마다 원문 근거와 에이전트 실행 기록을 함께 남깁니다.");
+      const timing = await prepareComparison(page, h);
       await openTab(page, h, "Strategy Brief", ".strategy-profit-panel");
       await page.evaluate(() => document.querySelector(".strategy-profit-panel")?.scrollIntoView({ block: "center" }));
-      await h.subtitle("실제 공시와 모델 추정을 시각적으로 분리합니다.", 1900);
+      await h.subtitle("DART 실제값과 모델 추정을 시각적으로 분리합니다.", 1900);
       await h.zoom(1.28, 1270, 500, 2500);
       await h.unzoom();
-      await page.evaluate(() => document.querySelector(".strategy-salary-panel")?.scrollIntoView({ block: "center" }));
-      await h.subtitle("평균 급여 추이, 전망 구간, 성별 집계의 한계를 함께 확인합니다.", 2300);
-      return waitMs;
+      await page.evaluate(() => document.querySelector(".strategy-evidence")?.scrollIntoView({ block: "center" }));
+      await h.subtitle("Run ID·품질 게이트·공시 원문 링크로 결과를 다시 검증합니다.", 2400);
+      await h.zoom(1.3, 1250, 560, 2600);
+      await h.unzoom();
+      return timing;
     },
   },
   4: {
     label: "4. AI 분석 질문",
     run: async (page, h) => {
       await h.subtitle("DART 근거를 숨기지 않고 HR 전략 질문으로 확장합니다.");
-      const waitMs = await prepareComparison(page, h);
+      const timing = await prepareComparison(page, h);
       await openTab(page, h, "Strategy Brief", ".strategy-profit-panel");
       const question = "영업이익과 평균 급여 변화가 다른 기업을 구분하고 HR 전략 가설과 KPI를 제안해줘";
       await h.moveClick(await h.box("#analysisPrompt"));
@@ -243,7 +253,7 @@ const SCENES = {
       await page.evaluate(() => document.querySelector(".prompt-box")?.scrollIntoView({ block: "center" }));
       await h.zoom(1.25, 360, 650, 2600);
       await h.unzoom();
-      return waitMs;
+      return timing;
     },
   },
 };

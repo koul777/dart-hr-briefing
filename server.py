@@ -1,22 +1,30 @@
 from __future__ import annotations
 
+import errno
+import gzip
+import hashlib
 import io
 import json
+import math
 import os
 import re
+import secrets
+import socket
 import sys
 import threading
 import time
+import unicodedata
 import webbrowser
 import zipfile
-from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
+from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from typing import Any, Mapping
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunsplit
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
@@ -25,14 +33,35 @@ from claude_mcp_adapter import (
     UnavailableClaudeCodeMCPAdapter,
     create_claude_code_mcp_adapter,
 )
-from agent_orchestration import WorkforceAgentOrchestrator, WorkforceObservation
+from analysis_contract import AnalysisRequest, MAX_CORP_CODES
+from agent_orchestration import (
+    ALLOWED_REQUEST_METRICS,
+    ALLOWED_REQUEST_VIEWS,
+    WorkforceAgentOrchestrator,
+    WorkforceObservation,
+)
 from openai_responses_adapter import OpenAIResponsesError, OpenAIResponsesProvider
-from orchestrator import AnalysisOrchestrator, AnalysisRequest, MAX_CORP_CODES
-from workforce_analytics import build_workforce_summary
+from runtime_controls import (
+    BoundedTTLCache,
+    OrchestrationTelemetry,
+    SlidingWindowRateLimiter,
+    StripedLockPool,
+    anonymized_client_key,
+)
+from workforce_analytics import (
+    MAX_REASONABLE_ABSOLUTE_VALUE,
+    MAX_REASONABLE_HEADCOUNT,
+    MAX_REASONABLE_TENURE_MONTHS,
+    build_workforce_summary,
+    parse_months,
+    select_employee_rows,
+)
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent
-if getattr(sys, "frozen", False):
+FROZEN_RUNTIME = bool(getattr(sys, "frozen", False))
+DEPLOYED_ON_VERCEL = bool(os.environ.get("VERCEL"))
+if FROZEN_RUNTIME:
     # In a PyInstaller one-file build, bundled static assets are extracted to
     # _MEIPASS while .env and the cache live beside the executable.
     ROOT = Path(sys.executable).resolve().parent
@@ -40,47 +69,328 @@ if getattr(sys, "frozen", False):
 else:
     ROOT = SOURCE_ROOT
     STATIC_DIR = ROOT / "static"
-DATA_DIR = (
-    Path(os.environ.get("DART_DATA_DIR", "/tmp/dart-workforce"))
-    if os.environ.get("VERCEL")
-    else ROOT / "data"
-)
-CORP_CACHE = DATA_DIR / "corp_codes.json"
+
+
+def _runtime_data_dir(
+    root: Path,
+    *,
+    frozen: bool,
+    environ: Mapping[str, str],
+) -> Path:
+    override = str(environ.get("DART_DATA_DIR") or "").strip()
+    if override:
+        return Path(override)
+    if environ.get("VERCEL"):
+        return Path("/tmp/dart-workforce")
+    local_app_data = str(environ.get("LOCALAPPDATA") or "").strip()
+    if frozen and local_app_data:
+        return Path(local_app_data) / "DART-HR-Briefing"
+    return root / "data"
+
+
 DART_BASE = "https://opendart.fss.or.kr/api"
-PORT = int(os.environ.get("PORT", "8765"))
+APP_ID = "kr.opendart.dart-hr-briefing"
+APP_NAME = "DART HR Briefing"
+APP_VERSION = "0.2.0"
+DEFAULT_PORT = 8765
+MAX_PORT_FALLBACK_ATTEMPTS = 20
+MAX_HEALTH_RESPONSE_BYTES = 64 * 1024
+MAX_DOTENV_BYTES = 64 * 1024
+MAX_DOTENV_VALUE_CHARS = 4096
+HSTS_HEADER = "max-age=31536000"
+DEFAULT_HR_ANALYSIS_QUESTION = (
+    "선택 기업의 인력 생산성·보상 지속가능성·인력구조 차이를 비교하고, "
+    "판단 한계와 다음 내부 데이터를 설명해줘"
+)
+
+
+def _effective_request_target(
+    raw_target: str,
+    *,
+    deployed_on_vercel: bool | None = None,
+) -> str:
+    """Restore the public path forwarded through the single Vercel function."""
+
+    deployed = DEPLOYED_ON_VERCEL if deployed_on_vercel is None else deployed_on_vercel
+    if not deployed:
+        return raw_target
+    parsed = urlparse(raw_target)
+    if parsed.path != "/api/index":
+        return raw_target
+    route = ""
+    route_present = False
+    remaining: list[tuple[str, str]] = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key == "__route" and not route_present:
+            route = value
+            route_present = True
+        else:
+            remaining.append((key, value))
+    if not route_present:
+        return raw_target
+    public_path = "/" if route in {"", "root"} else f"/{route.lstrip('/')}"
+    return urlunsplit(("", "", public_path, urlencode(remaining, doseq=True), ""))
+
+
+def _runtime_port(environ: Mapping[str, str] | None = None) -> int:
+    source = os.environ if environ is None else environ
+    try:
+        port = int(source.get("PORT", str(DEFAULT_PORT)))
+    except ValueError:
+        return DEFAULT_PORT
+    return port if 1 <= port <= 65535 else DEFAULT_PORT
+
+
+def _explicit_runtime_port(environ: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if environ is None else environ
+    raw = str(source.get("PORT", "")).strip()
+    try:
+        port = int(raw)
+    except ValueError:
+        return False
+    return bool(raw) and 1 <= port <= 65535
+
+
+def _runtime_build_id(
+    environ: Mapping[str, str],
+    *,
+    frozen: bool,
+    executable: Path,
+) -> str:
+    configured = str(environ.get("DART_BUILD_ID", "")).strip()
+    if configured and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}", configured):
+        return configured
+    if not frozen:
+        return "source"
+    try:
+        digest = hashlib.sha256()
+        with executable.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return f"sha256-{digest.hexdigest()[:12]}"
+    except OSError:
+        return "frozen-unknown"
+
+
+PORT = _runtime_port()
+PORT_EXPLICITLY_CONFIGURED = _explicit_runtime_port()
 DART_CACHEABLE_ENDPOINTS = {
     "fnlttSinglAcnt.json",
     "empSttus.json",
+    "exctvSttus.json",
     "unrstExctvMendngSttus.json",
 }
-DART_RESPONSE_CACHE: dict[str, tuple[float, Any]] = {}
-DART_RESPONSE_CACHE_LOCK = threading.Lock()
-DART_RESPONSE_CACHE_TTL_SECONDS = 300
+DART_STATUS_MESSAGES = {
+    "010": "OpenDART 인증키가 등록되지 않았습니다.",
+    "011": "OpenDART 인증키를 사용할 수 없습니다.",
+    "012": "OpenDART에 접근할 수 없는 IP입니다.",
+    "014": "OpenDART 파일이 존재하지 않습니다.",
+    "020": "OpenDART 요청 제한을 초과했습니다.",
+    "021": "OpenDART 조회 가능 회사 수를 초과했습니다.",
+    "100": "OpenDART 요청 필드 값이 올바르지 않습니다.",
+    "101": "OpenDART에 부적절한 접근입니다.",
+    "800": "OpenDART가 시스템 점검 중입니다.",
+    "900": "OpenDART에서 정의되지 않은 오류가 발생했습니다.",
+    "901": "OpenDART 계정의 개인정보 보유기간이 만료되었습니다.",
+}
 
 
 def load_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    if not path.exists():
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_DOTENV_BYTES + 1)
+    except OSError:
         return values
-    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+    if len(raw) > MAX_DOTENV_BYTES:
+        return values
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return values
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
+        key = key.strip()
         value = value.strip().strip('"').strip("'")
-        values[key.strip()] = value
+        if (
+            not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key)
+            or len(value) > MAX_DOTENV_VALUE_CHARS
+            or any(
+                unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                for character in value
+            )
+        ):
+            continue
+        values[key] = value
     return values
 
 
-DOTENV = load_dotenv(ROOT / ".env")
-if Path.cwd().resolve() != ROOT.resolve():
-    for dotenv_key, dotenv_value in load_dotenv(Path.cwd() / ".env").items():
+def _runtime_environment(
+    dotenv: Mapping[str, str],
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    """Use dotenv as local defaults while preserving deployment overrides."""
+
+    return {**dotenv, **environ}
+
+
+def _trusted_dotenv_paths(root: Path, *, frozen: bool) -> tuple[Path, ...]:
+    paths = [root / ".env"]
+    standard_source_dist = (
+        frozen
+        and root.name.casefold() == "dist"
+        and (root.parent / "DARTStructure.spec").is_file()
+    )
+    if standard_source_dist:
+        paths.append(root.parent / ".env")
+    return tuple(paths)
+
+
+DOTENV: dict[str, str] = {}
+for dotenv_path in _trusted_dotenv_paths(ROOT, frozen=FROZEN_RUNTIME):
+    for dotenv_key, dotenv_value in load_dotenv(dotenv_path).items():
         DOTENV.setdefault(dotenv_key, dotenv_value)
-API_KEY = DOTENV.get("OPENDART_API_KEY") or os.environ.get("OPENDART_API_KEY", "")
-RUNTIME_ENV = dict(os.environ)
-RUNTIME_ENV.update(DOTENV)
+RUNTIME_ENV = _runtime_environment(DOTENV, os.environ)
+BUILD_ID = _runtime_build_id(
+    RUNTIME_ENV,
+    frozen=FROZEN_RUNTIME,
+    executable=Path(sys.executable).resolve(),
+)
+INSTANCE_ID = secrets.token_hex(12)
+API_KEY = str(RUNTIME_ENV.get("OPENDART_API_KEY", "")).strip()
+DATA_DIR = _runtime_data_dir(
+    ROOT,
+    frozen=FROZEN_RUNTIME,
+    environ={**RUNTIME_ENV, "VERCEL": os.environ.get("VERCEL", "")},
+)
+CORP_CACHE = DATA_DIR / "corp_codes.json"
+BUNDLED_CORP_CATALOG = SOURCE_ROOT / "seed" / "corp_codes.json.gz"
+OPEN_BROWSER_ON_START = str(RUNTIME_ENV.get("DART_OPEN_BROWSER", "true")).strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+STRICT_ORCHESTRATION_SCHEMA = str(
+    RUNTIME_ENV.get("DART_STRICT_ORCHESTRATION_SCHEMA", "true")
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bounded_environment_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = str(RUNTIME_ENV.get(name, "")).strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        value = default
+    return min(maximum, max(minimum, value))
+
+
+DART_RESPONSE_CACHE_TTL_SECONDS = _bounded_environment_int(
+    "DART_CACHE_TTL_SECONDS", 300, 30, 3600
+)
+DART_RESPONSE_CACHE_MAX_ENTRIES = _bounded_environment_int(
+    "DART_CACHE_MAX_ENTRIES", 512, 16, 5000
+)
+DART_RESPONSE_CACHE_MAX_BYTES = _bounded_environment_int(
+    "DART_CACHE_MAX_BYTES", 64 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024
+)
+MAX_DART_RESPONSE_BYTES = 25 * 1024 * 1024
+MAX_CORP_XML_BYTES = 100 * 1024 * 1024
+MAX_CORP_CACHE_BYTES = 40 * 1024 * 1024
+MAX_COMPANY_CATALOG_ENTRIES = 200_000
+MAX_COMPANY_SEARCH_CHARS = 100
+MAX_DART_LIST_ROWS = 10_000
+MAX_PUBLIC_LABEL_CHARS = 500
+MAX_FINANCIAL_HISTORY_OBSERVATIONS = 48
+MAX_PEOPLE_HISTORY_OBSERVATIONS = 32
+DART_RETRY_ATTEMPTS = _bounded_environment_int("DART_RETRY_ATTEMPTS", 3, 1, 4)
+DART_RETRY_BASE_DELAY_MS = _bounded_environment_int(
+    "DART_RETRY_BASE_DELAY_MS", 250, 50, 2000
+)
+DART_RESPONSE_CACHE = BoundedTTLCache(
+    max_entries=DART_RESPONSE_CACHE_MAX_ENTRIES,
+    max_weight=DART_RESPONSE_CACHE_MAX_BYTES,
+    ttl_seconds=DART_RESPONSE_CACHE_TTL_SECONDS,
+)
+DART_REQUEST_LOCKS = StripedLockPool(64)
+REQUEST_RATE_LIMITER = SlidingWindowRateLimiter(
+    limit=_bounded_environment_int("DART_RATE_LIMIT_PER_MINUTE", 30, 5, 600),
+    window_seconds=60,
+    max_clients=_bounded_environment_int("DART_RATE_LIMIT_MAX_CLIENTS", 4096, 128, 20000),
+)
+ORCHESTRATION_TELEMETRY = OrchestrationTelemetry()
+RATE_LIMIT_SALT = secrets.token_hex(16)
+RATE_LIMITED_POST_PATHS = {"/api/analysis", "/api/analysis/context", "/api/ai/connect"}
+RATE_LIMITED_GET_PATHS = {
+    "/api/companies",
+    "/api/financials",
+    "/api/financials/history",
+    "/api/people",
+    "/api/people/history",
+    "/api/executives",
+    "/api/executives/history",
+    "/api/workforce/orchestration",
+}
 CORP_LOCK = threading.Lock()
 MAX_COMPANIES = MAX_CORP_CODES
+
+
+def enforce_history_observation_budget(
+    codes: list[str],
+    start_year: int,
+    end_year: int,
+    *,
+    maximum: int,
+) -> int:
+    observations = len(codes) * (end_year - start_year + 1)
+    if observations > maximum:
+        raise ValueError(
+            f"기업×연도 요청 예산은 최대 {maximum}개 관측입니다. 기업 수나 기간을 줄여 주세요."
+        )
+    return observations
+
+
+_ORCHESTRATION_VALIDATOR: Any | None = None
+
+
+def _load_orchestration_validator() -> Any:
+    """Load and validate the bundled schema before accepting strict traffic."""
+
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError as exc:
+        raise RuntimeError(
+            "Orchestration strict schema validation requires jsonschema."
+        ) from exc
+    schema_path = SOURCE_ROOT / "schemas" / "workforce_orchestration_v2.schema.json"
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+        return Draft202012Validator(schema)
+    except Exception as exc:
+        raise RuntimeError("Orchestration strict schema could not be initialized.") from exc
+
+
+def validate_orchestration_response(payload: Mapping[str, Any]) -> None:
+    """Optionally enforce the published v2 schema at an orchestration boundary."""
+    if not STRICT_ORCHESTRATION_SCHEMA:
+        return
+    if payload.get("schema_version") != 2:
+        raise RuntimeError("Orchestration response failed strict schema validation.")
+    global _ORCHESTRATION_VALIDATOR
+    try:
+        if _ORCHESTRATION_VALIDATOR is None:
+            _ORCHESTRATION_VALIDATOR = _load_orchestration_validator()
+        _ORCHESTRATION_VALIDATOR.validate(payload)
+    except Exception as exc:
+        raise RuntimeError("Orchestration response failed strict schema validation.") from exc
+
+
+if STRICT_ORCHESTRATION_SCHEMA:
+    _ORCHESTRATION_VALIDATOR = _load_orchestration_validator()
 
 
 def load_briefing_rules() -> str | None:
@@ -138,6 +448,125 @@ EXECUTIVE_METRIC_CATALOG: list[dict[str, Any]] = [
     {"metric_id": "female_share", "label": "여성 임원 비율", "group": "다양성", "unit": "%", "source_key": "female_share"},
 ]
 
+DECISION_METRIC_CATALOG: list[dict[str, Any]] = [
+    {
+        "metric_id": "employees_total",
+        "label": "총 직원 수",
+        "unit": "명",
+        "signal_type": "lagging",
+        "formula": None,
+        "source_components": ["employee_status"],
+        "interpretation_limit": "기준일의 기업 전체 공시 인원이며 FTE·직무별 수요나 이탈 원인을 설명하지 않습니다.",
+    },
+    {
+        "metric_id": "average_salary",
+        "label": "1인 평균 급여",
+        "unit": "원",
+        "signal_type": "lagging",
+        "formula": "공시 평균의 인원 가중 또는 급여총액 / 직원 수",
+        "source_components": ["employee_status"],
+        "interpretation_limit": "집계 급여이며 개인별 보상, 직무가치, 성과급 산식 또는 보상 공정성을 판정하지 않습니다.",
+    },
+    {
+        "metric_id": "annual_salary_total",
+        "label": "연간 급여 총액",
+        "unit": "원",
+        "signal_type": "lagging",
+        "formula": "공시된 사업부·성별 급여총액의 합계",
+        "source_components": ["employee_status"],
+        "interpretation_limit": "공시 집계범위 차이가 있을 수 있으며 총 인건비·복리후생비 전체와 같지 않습니다.",
+    },
+    {
+        "metric_id": "revenue_per_employee",
+        "label": "인당 매출",
+        "unit": "원",
+        "signal_type": "benchmark",
+        "formula": "매출액 / 총 직원 수",
+        "source_components": ["financial_status", "employee_status"],
+        "interpretation_limit": "기업 전체 비교 지표이며 개인·팀 생산성이나 차이의 원인을 설명하지 않습니다.",
+    },
+    {
+        "metric_id": "operating_profit_per_employee",
+        "label": "인당 영업이익",
+        "unit": "원",
+        "signal_type": "benchmark",
+        "formula": "영업이익 / 총 직원 수",
+        "source_components": ["financial_status", "employee_status"],
+        "interpretation_limit": "사업모델·자본집약도·외주 구조 차이의 영향을 받으므로 업종·규모 보정 없는 인과 해석을 금지합니다.",
+    },
+    {
+        "metric_id": "salary_to_revenue",
+        "label": "급여총액 / 매출",
+        "unit": "%",
+        "signal_type": "early_warning_proxy",
+        "formula": "연간 급여 총액 / 매출액 × 100",
+        "source_components": ["financial_status", "employee_status"],
+        "interpretation_limit": "보상 지속가능성의 방향성 점검용 대리 지표이며 성과급 재원이나 적정 보상을 확정하지 않습니다.",
+    },
+    {
+        "metric_id": "operating_margin",
+        "label": "영업이익률",
+        "unit": "%",
+        "signal_type": "lagging",
+        "formula": "영업이익 / 매출액 × 100",
+        "source_components": ["financial_status"],
+        "interpretation_limit": "이미 실현된 기업 전체 재무성과이며 보상정책의 효과나 인력 생산성의 원인을 설명하지 않습니다.",
+    },
+    {
+        "metric_id": "contract_share",
+        "label": "계약직 비중",
+        "unit": "%",
+        "signal_type": "early_warning_proxy",
+        "formula": "계약직 수 / 총 직원 수 × 100",
+        "source_components": ["employee_status"],
+        "interpretation_limit": "공시 고용형태 비중이며 고용 안정성, 이탈 위험 또는 선택 원인을 직접 측정하지 않습니다.",
+    },
+    {
+        "metric_id": "average_tenure_years",
+        "label": "평균 근속",
+        "unit": "년",
+        "signal_type": "lagging",
+        "formula": "공시 평균 근속의 인원 가중",
+        "source_components": ["employee_status"],
+        "interpretation_limit": "기준일 집계 평균이며 이탈 위험, 몰입 또는 장기근속의 원인을 설명하지 않습니다.",
+    },
+    {
+        "metric_id": "term_expiring_within_12_months",
+        "label": "12개월 내 임기 만료 임원",
+        "unit": "명",
+        "signal_type": "early_warning_proxy",
+        "formula": "결산일 다음날부터 달력 기준 12개월 내 임기 종료 인원",
+        "source_components": ["executive_status"],
+        "interpretation_limit": "임기 일정 신호일 뿐 승계 준비도, 이사회 실효성 또는 개인 성과를 판정하지 않습니다.",
+    },
+    {
+        "metric_id": "outside_director_share",
+        "label": "사외이사 비중",
+        "unit": "%",
+        "signal_type": "benchmark",
+        "formula": "사외이사 수 / 전체 임원 수 × 100",
+        "source_components": ["executive_status"],
+        "interpretation_limit": "선택 기업 간 구성 비교이며 이사회 독립성이나 실효성을 직접 판정하지 않습니다.",
+    },
+    {
+        "metric_id": "ceo_count",
+        "label": "대표이사 수",
+        "unit": "명",
+        "signal_type": "benchmark",
+        "formula": "직위에 대표이사가 공시된 임원 행 수",
+        "source_components": ["executive_status"],
+        "interpretation_limit": "공시 직위 구성의 비교값이며 리더십 품질, 권한 배분 또는 승계 준비도를 판정하지 않습니다.",
+    },
+]
+
+DECISION_DIMENSION_CATALOG: list[dict[str, Any]] = [
+    {"dimension_id": "productivity", "label": "인력 생산성", "metric_ids": ["operating_profit_per_employee", "revenue_per_employee"]},
+    {"dimension_id": "compensation_sustainability", "label": "보상 지속가능성", "metric_ids": ["salary_to_revenue", "operating_margin"]},
+    {"dimension_id": "workforce_structure", "label": "인력구조 변화", "metric_ids": ["contract_share", "average_tenure_years"]},
+    {"dimension_id": "governance_continuity", "label": "리더십·이사회 연속성", "metric_ids": ["term_expiring_within_12_months", "outside_director_share", "ceo_count"]},
+    {"dimension_id": "data_completeness", "label": "판단 근거 완전성", "metric_ids": []},
+]
+
 
 class MCPProviderFacade:
     """Adapt the transport-neutral Claude MCP client to the orchestrator protocol."""
@@ -171,8 +600,6 @@ CUSTOM_BRIEFING_RULES = load_briefing_rules()
 if CUSTOM_BRIEFING_RULES:
     OPENAI_PROVIDER.instructions = CUSTOM_BRIEFING_RULES
 ACTIVE_AI_PROVIDER = OPENAI_PROVIDER if OPENAI_PROVIDER.configured else MCP_ADAPTER
-ORCHESTRATOR = AnalysisOrchestrator(ACTIVE_AI_PROVIDER)
-CONTEXT_ORCHESTRATOR = AnalysisOrchestrator()
 WORKFORCE_MCP_ADAPTER = MCPProviderFacade(
     create_claude_code_mcp_adapter(),
     tool="analyze_workforce_strategy",
@@ -180,11 +607,14 @@ WORKFORCE_MCP_ADAPTER = MCPProviderFacade(
 WORKFORCE_AI_PROVIDER = (
     OPENAI_PROVIDER if OPENAI_PROVIDER.configured else WORKFORCE_MCP_ADAPTER
 )
-WORKFORCE_ORCHESTRATOR = WorkforceAgentOrchestrator(provider=WORKFORCE_AI_PROVIDER)
 
 
 class DARTError(Exception):
     pass
+
+
+def _reject_nonfinite_json(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
 
 def user_openai_provider(api_key: str) -> OpenAIResponsesProvider:
@@ -193,10 +623,10 @@ def user_openai_provider(api_key: str) -> OpenAIResponsesProvider:
     key = api_key.strip()
     if not key:
         raise ValueError("OpenAI API Key를 입력해 주세요.")
-    if len(key) > 512 or any(character.isspace() for character in key):
-        raise ValueError("OpenAI API Key 형식이 올바르지 않습니다.")
     if not key.startswith("sk-"):
         raise ValueError("OpenAI API Key는 sk-로 시작해야 합니다.")
+    if not re.fullmatch(r"sk-[A-Za-z0-9_-]{4,509}", key):
+        raise ValueError("OpenAI API Key 형식이 올바르지 않습니다.")
     return replace(OPENAI_PROVIDER, api_key=key)
 
 
@@ -206,49 +636,127 @@ def dart_request(endpoint: str, params: dict[str, str], binary: bool = False) ->
     cache_key = None
     if not binary and endpoint in DART_CACHEABLE_ENDPOINTS:
         cache_key = f"{endpoint}?{urlencode(sorted(params.items()))}"
-        now = time.time()
-        with DART_RESPONSE_CACHE_LOCK:
-            cached = DART_RESPONSE_CACHE.get(cache_key)
-            if cached:
-                expires_at, cached_result = cached
-                if expires_at > now:
-                    return deepcopy(cached_result)
-                DART_RESPONSE_CACHE.pop(cache_key, None)
+        found, cached_result = DART_RESPONSE_CACHE.get(cache_key)
+        if found:
+            return cached_result
+        with DART_REQUEST_LOCKS.lock_for(cache_key):
+            found, cached_result = DART_RESPONSE_CACHE.get(cache_key)
+            if found:
+                return cached_result
+            return _perform_dart_request(endpoint, params, binary=False, cache_key=cache_key)
+    return _perform_dart_request(endpoint, params, binary=binary, cache_key=None)
+
+
+def _perform_dart_request(
+    endpoint: str,
+    params: dict[str, str],
+    *,
+    binary: bool,
+    cache_key: str | None,
+) -> Any:
     query = {**params, "crtfc_key": API_KEY}
     url = f"{DART_BASE}/{endpoint}?{urlencode(query)}"
     request = Request(url, headers={"User-Agent": "dart-financial-dashboard/0.1"})
-    try:
-        with urlopen(request, timeout=40) as response:
-            payload = response.read()
-    except Exception as exc:
-        raise DARTError(f"OpenDART 연결에 실패했습니다: {exc}") from exc
+    payload: bytes | None = None
+    last_error: Exception | None = None
+    for attempt in range(DART_RETRY_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=40) as response:
+                payload = response.read(MAX_DART_RESPONSE_BYTES + 1)
+                if len(payload) > MAX_DART_RESPONSE_BYTES:
+                    raise DARTError("OpenDART 응답이 허용된 크기를 초과했습니다.")
+            break
+        except HTTPError as exc:
+            last_error = exc
+            retryable = exc.code == 429 or 500 <= exc.code < 600
+            exc.close()
+            if not retryable or attempt + 1 >= DART_RETRY_ATTEMPTS:
+                if retryable:
+                    raise DARTError(
+                        f"OpenDART가 일시적으로 응답하지 않습니다 (HTTP {exc.code})."
+                    ) from exc
+                raise DARTError(f"OpenDART가 요청을 거부했습니다 (HTTP {exc.code}).") from exc
+        except (URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt + 1 >= DART_RETRY_ATTEMPTS:
+                raise DARTError("OpenDART 연결에 일시적인 문제가 발생했습니다.") from exc
+        time.sleep((DART_RETRY_BASE_DELAY_MS / 1000) * (2 ** attempt))
+    if payload is None:
+        raise DARTError("OpenDART 연결에 실패했습니다.") from last_error
 
     if binary:
         return payload
     try:
-        result = json.loads(payload.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        result = json.loads(
+            payload.decode("utf-8-sig"),
+            parse_constant=_reject_nonfinite_json,
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
         raise DARTError("OpenDART 응답을 해석하지 못했습니다.") from exc
-    if result.get("status") not in (None, "000"):
-        raise DARTError(f"{result.get('message', 'OpenDART 요청 오류')} ({result.get('status')})")
+    if not isinstance(result, dict):
+        raise DARTError("OpenDART 응답 형식이 올바르지 않습니다.")
+    dart_status = result.get("status")
+    if not isinstance(dart_status, str) or not re.fullmatch(r"\d{3}", dart_status):
+        raise DARTError("OpenDART 응답 상태 형식이 올바르지 않습니다.")
+    if dart_status == "013":
+        if cache_key:
+            DART_RESPONSE_CACHE.set(cache_key, result, weight=len(payload))
+        return result
+    if dart_status != "000":
+        message = DART_STATUS_MESSAGES.get(
+            str(dart_status), "OpenDART 요청을 처리하지 못했습니다."
+        )
+        raise DARTError(f"{message} ({dart_status})")
     if cache_key:
-        with DART_RESPONSE_CACHE_LOCK:
-            DART_RESPONSE_CACHE[cache_key] = (time.time() + DART_RESPONSE_CACHE_TTL_SECONDS, deepcopy(result))
+        DART_RESPONSE_CACHE.set(cache_key, result, weight=len(payload))
     return result
 
 
 def load_corp_codes() -> list[dict[str, str]]:
     with CORP_LOCK:
-        if CORP_CACHE.exists() and time.time() - CORP_CACHE.stat().st_mtime < 24 * 60 * 60:
+        try:
+            cache_stat = CORP_CACHE.stat()
+            cache_is_fresh = (
+                cache_stat.st_size <= MAX_CORP_CACHE_BYTES
+                and time.time() - cache_stat.st_mtime < 24 * 60 * 60
+            )
+        except OSError:
+            cache_is_fresh = False
+        if cache_is_fresh:
             try:
-                return json.loads(CORP_CACHE.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                cached = _normalise_company_catalog(
+                    json.loads(
+                        CORP_CACHE.read_text(encoding="utf-8"),
+                        parse_constant=_reject_nonfinite_json,
+                    )
+                )
+                if cached:
+                    return cached
+            except (OSError, UnicodeDecodeError, ValueError):
                 pass
 
-        payload = dart_request("corpCode.xml", {}, binary=True)
+        bundled_companies = _load_bundled_corp_catalog()
+        # Downloading and parsing the complete OpenDART catalog can exceed a
+        # serverless cold-start window. The bundled, validated snapshot keeps
+        # company search responsive; data APIs still query OpenDART live.
+        if bundled_companies and (DEPLOYED_ON_VERCEL or not API_KEY):
+            return bundled_companies
+
+        try:
+            payload = dart_request("corpCode.xml", {}, binary=True)
+        except DARTError:
+            if bundled_companies:
+                return bundled_companies
+            raise
         try:
             with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                member = archive.getinfo("CORPCODE.xml")
+                if member.file_size > MAX_CORP_XML_BYTES:
+                    raise DARTError("기업 고유번호 파일이 허용된 크기를 초과했습니다.")
                 xml_bytes = archive.read("CORPCODE.xml")
+            lowered_xml = xml_bytes.lower()
+            if b"<!doctype" in lowered_xml or b"<!entity" in lowered_xml:
+                raise DARTError("기업 고유번호 XML에 허용되지 않은 선언이 포함되어 있습니다.")
             root = ET.fromstring(xml_bytes)
         except (zipfile.BadZipFile, KeyError, ET.ParseError) as exc:
             raise DARTError("기업 고유번호 파일을 해석하지 못했습니다.") from exc
@@ -267,15 +775,89 @@ def load_corp_codes() -> list[dict[str, str]]:
                     }
                 )
 
-        DATA_DIR.mkdir(exist_ok=True)
-        CORP_CACHE.write_text(json.dumps(companies, ensure_ascii=False), encoding="utf-8")
+        companies = _normalise_company_catalog(companies)
+        if not companies:
+            raise DARTError("기업 고유번호 목록이 비어 있거나 올바르지 않습니다.")
+        rendered = json.dumps(companies, ensure_ascii=False)
+        if len(rendered.encode("utf-8")) > MAX_CORP_CACHE_BYTES:
+            raise DARTError("기업 고유번호 캐시가 허용된 크기를 초과했습니다.")
+        temporary_cache = CORP_CACHE.with_name(
+            f".{CORP_CACHE.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+        )
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            temporary_cache.write_text(rendered, encoding="utf-8")
+            os.replace(temporary_cache, CORP_CACHE)
+        except OSError:
+            # A valid in-memory catalog is still useful when a read-only or
+            # full cache directory prevents persistence.
+            pass
+        finally:
+            try:
+                temporary_cache.unlink(missing_ok=True)
+            except OSError:
+                pass
         return companies
+
+
+def _load_bundled_corp_catalog() -> list[dict[str, str]]:
+    try:
+        with gzip.open(BUNDLED_CORP_CATALOG, "rb") as compressed:
+            raw_catalog = compressed.read(MAX_CORP_CACHE_BYTES + 1)
+        if len(raw_catalog) > MAX_CORP_CACHE_BYTES:
+            return []
+        return _normalise_company_catalog(
+            json.loads(
+                raw_catalog.decode("utf-8"),
+                parse_constant=_reject_nonfinite_json,
+            )
+        )
+    except (OSError, EOFError, UnicodeDecodeError, ValueError):
+        return []
+
+
+def _normalise_company_catalog(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > MAX_COMPANY_CATALOG_ENTRIES:
+        return []
+    companies: list[dict[str, str]] = []
+    seen_codes: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        corp_code = str(item.get("corp_code") or "").strip()
+        corp_name = str(item.get("corp_name") or "").strip()
+        stock_code = str(item.get("stock_code") or "").strip()
+        try:
+            corp_name.encode("utf-8")
+        except UnicodeEncodeError:
+            continue
+        if (
+            not re.fullmatch(r"\d{8}", corp_code)
+            or not corp_name
+            or len(corp_name) > 200
+            or any(
+                unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                for character in corp_name
+            )
+            or (stock_code and not re.fullmatch(r"\d{6}", stock_code))
+            or corp_code in seen_codes
+        ):
+            continue
+        seen_codes.add(corp_code)
+        companies.append({
+            "corp_code": corp_code,
+            "corp_name": corp_name,
+            "stock_code": stock_code,
+        })
+    return companies
 
 
 def search_companies(query: str, limit: int = 12) -> list[dict[str, str]]:
     query = query.strip().lower()
     if not query:
         return []
+    if len(query) > MAX_COMPANY_SEARCH_CHARS:
+        raise ValueError(f"기업 검색어는 {MAX_COMPANY_SEARCH_CHARS}자 이하여야 합니다.")
     companies = load_corp_codes()
 
     def score(company: dict[str, str]) -> tuple[int, int, str]:
@@ -299,15 +881,49 @@ def parse_amount(value: Any) -> float | None:
     if value is None:
         return None
     text = str(value).strip().replace(",", "")
+    if len(text) > 128:
+        return None
     if not text or text in {"-", "–", "-0"}:
         return None
-    negative = text.startswith("(") and text.endswith(")")
-    text = text.strip("()")
+    negative = False
+    if "(" in text or ")" in text:
+        if not (
+            text.startswith("(")
+            and text.endswith(")")
+            and text.count("(") == 1
+            and text.count(")") == 1
+        ):
+            return None
+        negative = True
+        text = text[1:-1].strip()
+        if text.startswith(("+", "-")):
+            return None
     try:
         number = float(text)
     except ValueError:
         return None
+    if not math.isfinite(number) or abs(number) > MAX_REASONABLE_ABSOLUTE_VALUE:
+        return None
     return -number if negative else number
+
+
+def _dart_list_rows(payload: Any, source: str) -> list[dict[str, Any]]:
+    """Validate a DART ``list`` payload before any domain parsing."""
+
+    if not isinstance(payload, Mapping):
+        raise DARTError(f"OpenDART {source} 응답 형식이 올바르지 않습니다.")
+    rows = payload.get("list")
+    if rows is None:
+        if payload.get("status") == "013":
+            return []
+        raise DARTError(f"OpenDART {source} 응답 목록이 없습니다.")
+    if (
+        not isinstance(rows, list)
+        or len(rows) > MAX_DART_LIST_ROWS
+        or any(not isinstance(row, Mapping) for row in rows)
+    ):
+        raise DARTError(f"OpenDART {source} 응답 목록 형식이 올바르지 않습니다.")
+    return [dict(row) for row in rows]
 
 
 def first_value(rows: list[dict[str, Any]], names: list[str], section: str) -> float | None:
@@ -317,24 +933,50 @@ def first_value(rows: list[dict[str, Any]], names: list[str], section: str) -> f
     candidates = section_rows or candidates
 
     for name in names:
-        for row in candidates:
-            if (row.get("account_nm") or "").strip() == name:
-                amount = parse_amount(row.get("thstrm_amount"))
-                if amount is not None:
-                    return amount
-    for name in names:
-        for row in candidates:
-            if name in (row.get("account_nm") or ""):
-                amount = parse_amount(row.get("thstrm_amount"))
-                if amount is not None:
-                    return amount
+        normalized_name = re.sub(r"\s+", "", name)
+        matching_rows = [
+            row
+            for row in candidates
+            if re.sub(r"\s+", "", _clean_text(row.get("account_nm")))
+            == normalized_name
+        ]
+        if not matching_rows:
+            continue
+        amounts = [parse_amount(row.get("thstrm_amount")) for row in matching_rows]
+        if any(amount is None for amount in amounts):
+            return None
+        distinct_amounts = {float(amount) for amount in amounts if amount is not None}
+        return amounts[0] if len(distinct_amounts) == 1 else None
     return None
 
 
-def ratio(numerator: float | None, denominator: float | None) -> float | None:
-    if numerator is None or denominator in (None, 0):
+def ratio(
+    numerator: float | None,
+    denominator: float | None,
+    *,
+    require_nonnegative_numerator: bool = False,
+) -> float | None:
+    if (
+        numerator is None
+        or denominator is None
+        or isinstance(numerator, bool)
+        or isinstance(denominator, bool)
+    ):
         return None
-    return numerator / denominator * 100
+    try:
+        numeric_numerator = float(numerator)
+        numeric_denominator = float(denominator)
+        if (
+            not math.isfinite(numeric_numerator)
+            or not math.isfinite(numeric_denominator)
+            or numeric_denominator <= 0
+            or (require_nonnegative_numerator and numeric_numerator < 0)
+        ):
+            return None
+        value = numeric_numerator / numeric_denominator * 100
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def fetch_company_financials(company: dict[str, str], year: str, report_code: str) -> dict[str, Any]:
@@ -344,9 +986,14 @@ def fetch_company_financials(company: dict[str, str], year: str, report_code: st
             "fnlttSinglAcnt.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
         )
-        rows = result.get("list", [])
+        rows = _dart_list_rows(result, "financial_status")
         if not rows:
-            raise DARTError("해당 연도·보고서의 재무 데이터가 없습니다.")
+            return {
+                **base,
+                "financials": {},
+                "status": "no_data",
+                "message": "해당 연도·보고서의 재무 데이터가 없습니다.",
+            }
 
         revenue = first_value(rows, ["매출액", "수익(매출액)", "영업수익", "매출"], "IS")
         operating_profit = first_value(rows, ["영업이익", "영업이익(손실)"], "IS")
@@ -370,14 +1017,31 @@ def fetch_company_financials(company: dict[str, str], year: str, report_code: st
             "current_liabilities": current_liabilities,
             "operating_margin": ratio(operating_profit, revenue),
             "net_margin": ratio(net_income, revenue),
-            "debt_ratio": ratio(liabilities, equity),
-            "current_ratio": ratio(current_assets, current_liabilities),
+            "debt_ratio": ratio(
+                liabilities,
+                equity,
+                require_nonnegative_numerator=True,
+            ),
+            "current_ratio": ratio(
+                current_assets,
+                current_liabilities,
+                require_nonnegative_numerator=True,
+            ),
         }
-        receipt = rows[0].get("rcept_no", "")
+        valid_receipts = sorted({
+            receipt
+            for row in rows
+            if re.fullmatch(
+                r"\d{14}",
+                receipt := str(row.get("rcept_no") or "").strip(),
+            )
+        })
+        receipt = valid_receipts[0] if len(valid_receipts) == 1 else ""
+        currency = _clean_text(rows[0].get("currency") or "KRW").upper()
         return {
             **base,
             "financials": financials,
-            "currency": rows[0].get("currency", "KRW"),
+            "currency": currency if re.fullmatch(r"[A-Z]{3}", currency) else "KRW",
             "statement": "연결재무제표" if any(row.get("fs_div") == "CFS" for row in rows) else "재무제표",
             "source_url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt}" if receipt else None,
         }
@@ -386,16 +1050,60 @@ def fetch_company_financials(company: dict[str, str], year: str, report_code: st
 
 
 def _clean_text(value: Any) -> str:
-    return str(value or "").strip()
+    text = str("" if value is None else value)[:10_000]
+    text = "".join(
+        character
+        for character in text
+        if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
+    )
+    return re.sub(r"\s+", " ", text).strip()[:MAX_PUBLIC_LABEL_CHARS]
 
 
 def _people_number(value: Any) -> float | None:
-    return parse_amount(value)
+    number = parse_amount(value)
+    return number if number is not None and number >= 0 else None
 
 
 def _people_count(value: Any) -> int | None:
     number = _people_number(value)
-    return int(number) if number is not None else None
+    return (
+        int(number)
+        if number is not None
+        and number <= MAX_REASONABLE_HEADCOUNT
+        and number.is_integer()
+        else None
+    )
+
+
+def _people_tenure_years(value: Any) -> float | None:
+    numeric_years = _people_number(value)
+    if numeric_years is not None:
+        return (
+            numeric_years
+            if numeric_years <= MAX_REASONABLE_TENURE_MONTHS / 12
+            else None
+        )
+    months = parse_months(value)
+    return months / 12 if months is not None else None
+
+
+def _unregistered_pay_category(value: Any) -> str:
+    text = _clean_text(value)
+    return text if text in {"미등기임원", "미등기 임원", "임원", "전체"} else "미등기임원"
+
+
+def _report_as_of(year: str, report_code: str) -> date | None:
+    try:
+        normalized_year = int(year)
+    except (TypeError, ValueError):
+        return None
+    month, day = {
+        "11013": (3, 31),
+        "11012": (6, 30),
+        "11014": (9, 30),
+        "11011": (12, 31),
+    }.get(report_code, (12, 31))
+    return date(normalized_year, month, day)
 
 
 def _employee_summary_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
@@ -405,31 +1113,22 @@ def _employee_summary_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, A
     totals exist, only those rows are used; otherwise all returned rows are a
     documented fallback and the response exposes the source mode.
     """
-    gender_totals = [
-        row for row in rows
-        if "성별합계" in _clean_text(row.get("fo_bbm"))
-        or _clean_text(row.get("sexdstn")) in {"합계", "전체"}
-    ]
-    if gender_totals:
-        unique: dict[str, dict[str, Any]] = {}
-        for row in gender_totals:
-            key = _clean_text(row.get("sexdstn")) or str(len(unique))
-            unique[key] = row
-        return list(unique.values()), "gender_total"
-    return rows, "all_rows_fallback"
+    selected, mode = select_employee_rows(rows)
+    return [dict(row) for row in selected], mode
 
 
 def fetch_company_people(company: dict[str, str], year: str, report_code: str) -> dict[str, Any]:
     base = {"company": company, "year": year, "report_code": report_code}
-    employee_payload: dict[str, Any] | None = None
-    executive_payload: dict[str, Any] | None = None
-    unregistered_pay_payload: dict[str, Any] | None = None
+    employee_rows: list[dict[str, Any]] = []
+    executive_rows: list[dict[str, Any]] = []
+    unregistered_pay_rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     try:
         employee_payload = dart_request(
             "empSttus.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
         )
+        employee_rows = _dart_list_rows(employee_payload, "employee_status")
     except DARTError as exc:
         errors.append({"source": "employee_status", "message": str(exc)})
     try:
@@ -437,6 +1136,7 @@ def fetch_company_people(company: dict[str, str], year: str, report_code: str) -
             "exctvSttus.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
         )
+        executive_rows = _dart_list_rows(executive_payload, "executive_status")
     except DARTError as exc:
         errors.append({"source": "executive_status", "message": str(exc)})
     try:
@@ -444,34 +1144,14 @@ def fetch_company_people(company: dict[str, str], year: str, report_code: str) -
             "unrstExctvMendngSttus.json",
             {"corp_code": company["corp_code"], "bsns_year": year, "reprt_code": report_code},
         )
+        unregistered_pay_rows = _dart_list_rows(
+            unregistered_pay_payload,
+            "unregistered_executive_pay",
+        )
     except DARTError as exc:
         errors.append({"source": "unregistered_executive_pay", "message": str(exc)})
 
-    employee_rows = (employee_payload or {}).get("list", []) if employee_payload else []
-    employee_rows = [row for row in employee_rows if isinstance(row, dict)]
     selected_rows, aggregation_mode = _employee_summary_rows(employee_rows)
-    employees_total = sum((_people_count(row.get("sm")) or 0) for row in selected_rows) or None
-    regular_employees = sum((_people_count(row.get("rgllbr_co")) or 0) for row in selected_rows) or None
-    contract_employees = sum((_people_count(row.get("cnttk_co")) or 0) for row in selected_rows) or None
-    regular_short_time = sum((_people_count(row.get("rgllbr_abacpt_labrr_co")) or 0) for row in selected_rows) or None
-    contract_short_time = sum((_people_count(row.get("cnttk_abacpt_labrr_co")) or 0) for row in selected_rows) or None
-    salary_total = sum((_people_number(row.get("fyer_salary_totamt")) or 0) for row in selected_rows) or None
-    tenure_weighted = sum(
-        (_people_number(row.get("avrg_cnwk_sdytrn")) or 0) * (_people_count(row.get("sm")) or 0)
-        for row in selected_rows
-    )
-    salary_weighted = sum(
-        (_people_number(row.get("jan_salary_am")) or 0) * (_people_count(row.get("sm")) or 0)
-        for row in selected_rows
-    )
-    avg_tenure = tenure_weighted / employees_total if employees_total else None
-    average_salary = (
-        salary_total / employees_total
-        if salary_total and employees_total
-        else salary_weighted / employees_total
-        if salary_weighted and employees_total
-        else None
-    )
     employee_breakdown = [
         {
             "sex": _clean_text(row.get("sexdstn")) or None,
@@ -479,61 +1159,48 @@ def fetch_company_people(company: dict[str, str], year: str, report_code: str) -
             "regular": _people_count(row.get("rgllbr_co")),
             "contract": _people_count(row.get("cnttk_co")),
             "total": _people_count(row.get("sm")),
-            "average_tenure": _people_number(row.get("avrg_cnwk_sdytrn")),
+            "average_tenure": _people_tenure_years(row.get("avrg_cnwk_sdytrn")),
             "annual_salary_total": _people_number(row.get("fyer_salary_totamt")),
             "average_salary": _people_number(row.get("jan_salary_am")),
         }
         for row in selected_rows
     ]
 
-    executive_rows = (executive_payload or {}).get("list", []) if executive_payload else []
-    executive_rows = [row for row in executive_rows if isinstance(row, dict)]
-    registered = sum(1 for row in executive_rows if "등기" in _clean_text(row.get("rgist_exctv_at")) and "미등기" not in _clean_text(row.get("rgist_exctv_at")))
-    unregistered = sum(1 for row in executive_rows if "미등기" in _clean_text(row.get("rgist_exctv_at")))
-    full_time = sum(1 for row in executive_rows if _clean_text(row.get("fte_at")) == "상근")
-    part_time = sum(1 for row in executive_rows if _clean_text(row.get("fte_at")) == "비상근")
-    unregistered_pay_rows = (unregistered_pay_payload or {}).get("list", []) if unregistered_pay_payload else []
-    unregistered_pay_rows = [row for row in unregistered_pay_rows if isinstance(row, dict)]
     workforce_summary = build_workforce_summary(
         employee_rows=employee_rows,
         executive_rows=executive_rows,
         unregistered_pay_rows=unregistered_pay_rows,
+        as_of=_report_as_of(year, report_code),
     )
-    unregistered_pay_count = sum((_people_count(row.get("nmpr")) or 0) for row in unregistered_pay_rows) or None
-    unregistered_pay_total = sum((_people_number(row.get("fyer_salary_totamt")) or 0) for row in unregistered_pay_rows) or None
-    unregistered_average_source = sum(
-        (_people_number(row.get("jan_salary_am")) or 0) * (_people_count(row.get("nmpr")) or 0)
-        for row in unregistered_pay_rows
-    )
-    unregistered_average_salary = (
-        unregistered_average_source / unregistered_pay_count
-        if unregistered_average_source and unregistered_pay_count
-        else unregistered_pay_total / unregistered_pay_count
-        if unregistered_pay_total and unregistered_pay_count
-        else None
-    )
-    receipt = (employee_rows or executive_rows or unregistered_pay_rows or [{}])[0].get("rcept_no", "")
+    receipts = sorted({
+        str(row.get("rcept_no") or "").strip()
+        for rows in (employee_rows, executive_rows, unregistered_pay_rows)
+        for row in rows
+        if re.fullmatch(r"\d{14}", str(row.get("rcept_no") or "").strip())
+    })
+    component_receipts = {
+        "employee_status": sorted({
+            str(row.get("rcept_no") or "").strip()
+            for row in employee_rows
+            if re.fullmatch(r"\d{14}", str(row.get("rcept_no") or "").strip())
+        }),
+        "executive_status": sorted({
+            str(row.get("rcept_no") or "").strip()
+            for row in executive_rows
+            if re.fullmatch(r"\d{14}", str(row.get("rcept_no") or "").strip())
+        }),
+        "unregistered_executive_pay": sorted({
+            str(row.get("rcept_no") or "").strip()
+            for row in unregistered_pay_rows
+            if re.fullmatch(r"\d{14}", str(row.get("rcept_no") or "").strip())
+        }),
+    }
     result = {
         **base,
         "people": {
-            "employees_total": employees_total,
-            "regular_employees": regular_employees,
-            "contract_employees": contract_employees,
-            "regular_short_time": regular_short_time,
-            "contract_short_time": contract_short_time,
-            "average_tenure_years": avg_tenure,
-            "annual_salary_total": salary_total,
-            "average_salary": average_salary,
             "employee_row_count": len(employee_rows),
             "employee_aggregation": aggregation_mode,
-            "executives_total": len(executive_rows) or None,
-            "registered_executives": registered or None,
-            "unregistered_executives": unregistered or None,
-            "full_time_executives": full_time or None,
-            "part_time_executives": part_time or None,
-            "unregistered_pay_count": unregistered_pay_count,
-            "unregistered_pay_total": unregistered_pay_total,
-            "unregistered_average_salary": unregistered_average_salary,
+            "average_salary_basis": workforce_summary["metric_basis"]["average_salary"],
             **workforce_summary["metrics"],
         },
         "workforce_quality": workforce_summary["quality"],
@@ -566,15 +1233,24 @@ def fetch_company_people(company: dict[str, str], year: str, report_code: str) -
         "executives": executive_rows,
         "unregistered_pay_breakdown": [
             {
-                "category": _clean_text(row.get("se")) or "미등기임원",
+                "category": _unregistered_pay_category(row.get("se")),
                 "count": _people_count(row.get("nmpr")),
                 "annual_salary_total": _people_number(row.get("fyer_salary_totamt")),
                 "average_salary": _people_number(row.get("jan_salary_am")),
-                "note": _clean_text(row.get("rm")) or None,
             }
             for row in unregistered_pay_rows
         ],
-        "source_urls": [f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt}" if receipt else None],
+        "source_urls": [
+            f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt}"
+            for receipt in receipts
+        ],
+        "source_by_component": {
+            component: [
+                f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt}"
+                for receipt in component_values
+            ]
+            for component, component_values in component_receipts.items()
+        },
     }
     if errors:
         result["errors"] = errors
@@ -584,32 +1260,85 @@ def fetch_company_people(company: dict[str, str], year: str, report_code: str) -
 
 
 def selected_companies(codes: list[str]) -> list[dict[str, str]]:
+    if len(codes) != len(set(codes)):
+        raise ValueError("기업 코드는 중복해서 선택할 수 없습니다.")
     companies = {company["corp_code"]: company for company in load_corp_codes()}
     selected = [companies[code] for code in codes if code in companies]
     if len(selected) != len(codes):
-        raise DARTError("선택한 기업 코드 중 존재하지 않는 코드가 포함되어 있습니다.")
+        raise ValueError("선택한 기업 코드 중 존재하지 않는 코드가 포함되어 있습니다.")
     return selected
+
+
+def _financial_pipeline_failure(
+    company: dict[str, str],
+    year: str,
+    report_code: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    return {
+        "company": company,
+        "year": year,
+        "report_code": report_code,
+        "financials": None,
+        "error": f"Financial pipeline failed ({type(exc).__name__}).",
+    }
+
+
+def _people_pipeline_failure(
+    company: dict[str, str],
+    year: str,
+    report_code: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    message = f"People pipeline failed ({type(exc).__name__})."
+    return {
+        "company": company,
+        "year": year,
+        "report_code": report_code,
+        "errors": [{"source": "people_pipeline", "message": message}],
+        "error": "People pipeline failed.",
+    }
 
 
 def fetch_financial_results(codes: list[str], year: str, report_code: str) -> list[dict[str, Any]]:
     selected = selected_companies(codes)
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(MAX_COMPANIES, len(selected))) as executor:
-        futures = [executor.submit(fetch_company_financials, company, year, report_code) for company in selected]
+        futures = {
+            executor.submit(fetch_company_financials, company, year, report_code): company
+            for company in selected
+        }
         for future in as_completed(futures):
-            results.append(future.result())
+            company = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append(_financial_pipeline_failure(company, year, report_code, exc))
     results.sort(key=lambda item: codes.index(item["company"]["corp_code"]))
     return results
 
 
 def fetch_history_results(codes: list[str], from_year: str, to_year: str, report_code: str) -> list[dict[str, Any]]:
+    enforce_history_observation_budget(
+        codes,
+        int(from_year),
+        int(to_year),
+        maximum=MAX_FINANCIAL_HISTORY_OBSERVATIONS,
+    )
     selected = selected_companies(codes)
     jobs = [(company, str(year)) for company in selected for year in range(int(from_year), int(to_year) + 1)]
     by_code: dict[str, dict[str, Any]] = {company["corp_code"]: {"company": company, "years": []} for company in selected}
     with ThreadPoolExecutor(max_workers=min(12, len(jobs))) as executor:
-        futures = [executor.submit(fetch_company_financials, company, year, report_code) for company, year in jobs]
+        futures = {
+            executor.submit(fetch_company_financials, company, year, report_code): (company, year)
+            for company, year in jobs
+        }
         for future in as_completed(futures):
-            result = future.result()
+            company, year = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = _financial_pipeline_failure(company, year, report_code, exc)
             by_code[result["company"]["corp_code"]]["years"].append(result)
     history = list(by_code.values())
     for item in history:
@@ -620,20 +1349,42 @@ def fetch_history_results(codes: list[str], from_year: str, to_year: str, report
 def fetch_people_results(codes: list[str], year: str, report_code: str) -> list[dict[str, Any]]:
     selected = selected_companies(codes)
     with ThreadPoolExecutor(max_workers=min(MAX_COMPANIES, len(selected))) as executor:
-        futures = [executor.submit(fetch_company_people, company, year, report_code) for company in selected]
-    results = [future.result() for future in as_completed(futures)]
+        futures = {
+            executor.submit(fetch_company_people, company, year, report_code): company
+            for company in selected
+        }
+        results = []
+        for future in as_completed(futures):
+            company = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append(_people_pipeline_failure(company, year, report_code, exc))
     results.sort(key=lambda item: codes.index(item["company"]["corp_code"]))
     return [_public_people_result(item) for item in results]
 
 
 def fetch_people_history_results(codes: list[str], from_year: str, to_year: str, report_code: str) -> list[dict[str, Any]]:
+    enforce_history_observation_budget(
+        codes,
+        int(from_year),
+        int(to_year),
+        maximum=MAX_PEOPLE_HISTORY_OBSERVATIONS,
+    )
     selected = selected_companies(codes)
     jobs = [(company, str(year)) for company in selected for year in range(int(from_year), int(to_year) + 1)]
     by_code: dict[str, dict[str, Any]] = {company["corp_code"]: {"company": company, "years": []} for company in selected}
     with ThreadPoolExecutor(max_workers=min(12, len(jobs))) as executor:
-        futures = [executor.submit(fetch_company_people, company, year, report_code) for company, year in jobs]
+        futures = {
+            executor.submit(fetch_company_people, company, year, report_code): (company, year)
+            for company, year in jobs
+        }
         for future in as_completed(futures):
-            result = future.result()
+            company, year = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = _people_pipeline_failure(company, year, report_code, exc)
             by_code[result["company"]["corp_code"]]["years"].append(result)
     history = list(by_code.values())
     for item in history:
@@ -670,10 +1421,20 @@ def fetch_workforce_observations(codes: list[str], year: str, report_code: str) 
         }
         for future in as_completed(people_futures):
             company = people_futures[future]
-            people_by_code[company["corp_code"]] = future.result()
+            try:
+                people_by_code[company["corp_code"]] = future.result()
+            except Exception as exc:
+                people_by_code[company["corp_code"]] = _people_pipeline_failure(
+                    company, year, report_code, exc
+                )
         for future in as_completed(financial_futures):
             company = financial_futures[future]
-            financials_by_code[company["corp_code"]] = future.result()
+            try:
+                financials_by_code[company["corp_code"]] = future.result()
+            except Exception as exc:
+                financials_by_code[company["corp_code"]] = _financial_pipeline_failure(
+                    company, year, report_code, exc
+                )
 
     observations: list[WorkforceObservation] = []
     for company in selected:
@@ -686,6 +1447,10 @@ def fetch_workforce_observations(codes: list[str], year: str, report_code: str) 
         source_urls = list(people.get("source_urls") or [])
         if financial.get("source_url"):
             source_urls.append(financial["source_url"])
+        source_by_component = dict(people.get("source_by_component") or {})
+        source_by_component["financial_status"] = (
+            [financial["source_url"]] if financial.get("source_url") else []
+        )
         observations.append(WorkforceObservation(
             company=company,
             year=year,
@@ -695,6 +1460,7 @@ def fetch_workforce_observations(codes: list[str], year: str, report_code: str) 
             unregistered_pay_rows=people.get("_raw_unregistered_pay_rows") or (),
             financials=financial.get("financials") or {},
             source_urls=source_urls,
+            source_by_component=source_by_component,
             errors=errors,
         ))
     return observations
@@ -744,9 +1510,13 @@ def analysis_request_from_payload(payload: dict[str, Any]) -> AnalysisRequest:
     raw_codes = payload.get("corp_codes", ())
     if isinstance(raw_codes, str):
         raw_codes = raw_codes.split(",")
+    elif not isinstance(raw_codes, (list, tuple)):
+        raise ValueError("corp_codes는 문자열 또는 배열이어야 합니다.")
     raw_metrics = payload.get("metric_ids", ())
     if isinstance(raw_metrics, str):
         raw_metrics = raw_metrics.split(",")
+    elif not isinstance(raw_metrics, (list, tuple)):
+        raise ValueError("metric_ids는 문자열 또는 배열이어야 합니다.")
     try:
         page = int(payload.get("page", 1))
         page_size = int(payload.get("page_size", 40))
@@ -755,7 +1525,7 @@ def analysis_request_from_payload(payload: dict[str, Any]) -> AnalysisRequest:
     sort_by = str(payload.get("sort_by") or "")
     sort_direction = str(payload.get("sort_direction") or "desc")
     return AnalysisRequest(
-        question=str(payload.get("question") or "기업 간 재무구조 차이를 비교해줘"),
+        question=str(payload.get("question") or DEFAULT_HR_ANALYSIS_QUESTION),
         view=str(payload.get("view") or "overview"),
         corp_codes=tuple(str(code).strip() for code in raw_codes if str(code).strip()),
         year=payload.get("year"),
@@ -769,37 +1539,279 @@ def analysis_request_from_payload(payload: dict[str, Any]) -> AnalysisRequest:
     )
 
 
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    """Threaded localhost server that never shares a listening port."""
+
+    allow_reuse_address = False
+    allow_reuse_port = False
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _application_identity(server: Any | None = None) -> dict[str, Any]:
+    port = PORT
+    address = getattr(server, "server_address", None)
+    if isinstance(address, tuple) and len(address) >= 2:
+        try:
+            candidate = int(address[1])
+        except (TypeError, ValueError):
+            candidate = PORT
+        if 1 <= candidate <= 65535:
+            port = candidate
+    return {
+        "id": APP_ID,
+        "name": APP_NAME,
+        "version": APP_VERSION,
+        "build_id": BUILD_ID,
+        "instance_id": INSTANCE_ID,
+        "port": port,
+    }
+
+
+def _port_conflict(exc: OSError) -> bool:
+    return exc.errno in {errno.EACCES, errno.EADDRINUSE, 10013, 10048} or getattr(
+        exc, "winerror", None
+    ) in {10013, 10048}
+
+
+def _fallback_ports(preferred_port: int) -> tuple[int, ...]:
+    candidates = [preferred_port]
+    for offset in range(1, MAX_PORT_FALLBACK_ATTEMPTS + 1):
+        candidate = preferred_port + offset
+        if candidate <= 65535:
+            candidates.append(candidate)
+    candidates.append(0)
+    return tuple(candidates)
+
+
+def create_local_http_server(
+    handler_class: type[BaseHTTPRequestHandler],
+    *,
+    preferred_port: int,
+    allow_fallback: bool,
+) -> ExclusiveThreadingHTTPServer:
+    ports = _fallback_ports(preferred_port) if allow_fallback else (preferred_port,)
+    last_conflict: OSError | None = None
+    for candidate in ports:
+        try:
+            return ExclusiveThreadingHTTPServer(("127.0.0.1", candidate), handler_class)
+        except OSError as exc:
+            if not _port_conflict(exc):
+                raise
+            last_conflict = exc
+    message = (
+        f"127.0.0.1:{preferred_port} 포트를 사용할 수 없습니다. "
+        "해당 포트를 사용 중인 프로그램을 종료하거나 PORT 값을 변경해 주세요."
+    )
+    raise OSError(getattr(last_conflict, "errno", errno.EADDRINUSE), message) from last_conflict
+
+
+def _health_matches_instance(payload: Any, *, instance_id: str) -> bool:
+    if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+        return False
+    app = payload.get("app")
+    return (
+        isinstance(app, Mapping)
+        and app.get("id") == APP_ID
+        and app.get("instance_id") == instance_id
+    )
+
+
+def open_browser_when_ready(
+    base_url: str,
+    *,
+    instance_id: str,
+    timeout_seconds: float = 8.0,
+    opener: Any | None = None,
+    browser_open: Any | None = None,
+) -> bool:
+    """Open only after the bound URL identifies this exact server instance."""
+
+    fetch = opener or urlopen
+    launch = browser_open or webbrowser.open
+    deadline = time.monotonic() + max(0.1, timeout_seconds)
+    health_url = f"{base_url}/api/health"
+    while time.monotonic() < deadline:
+        try:
+            request = Request(
+                health_url,
+                headers={"User-Agent": "dart-workforce-startup/1.0"},
+            )
+            with fetch(request, timeout=1.0) as response:
+                raw = response.read(MAX_HEALTH_RESPONSE_BYTES + 1)
+            if len(raw) <= MAX_HEALTH_RESPONSE_BYTES:
+                payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_nonfinite_json)
+                if _health_matches_instance(payload, instance_id=instance_id):
+                    launch(base_url)
+                    return True
+        except (OSError, TimeoutError, URLError, UnicodeDecodeError, ValueError, RecursionError):
+            pass
+        time.sleep(0.05)
+    print(
+        f"DART HR Briefing 시작 확인 실패: {base_url}",
+        file=sys.stderr,
+    )
+    return False
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
-    server_version = "DARTWorkforceIntelligence/0.1"
+    server_version = "DARTWorkforceIntelligence"
+    sys_version = ""
+
+    def version_string(self) -> str:
+        return self.server_version
 
     def log_message(self, format: str, *args: Any) -> None:
         return
 
-    def send_json(self, payload: dict[str, Any], status: int = HTTPStatus.OK) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    def send_json(
+        self,
+        payload: dict[str, Any],
+        status: int = HTTPStatus.OK,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        request_id = self.request_correlation_id()
+        if int(status) >= 400 and "request_id" not in payload:
+            payload = {**payload, "request_id": request_id}
+        try:
+            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError):
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+            headers = None
+            payload = {
+                "error": "서버 응답을 안전한 JSON으로 직렬화하지 못했습니다.",
+                "request_id": request_id,
+            }
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Strict-Transport-Security", HSTS_HEADER)
+        self.send_header("X-Request-ID", request_id)
+        for key, value in (headers or {}).items():
+            self.send_header(str(key), str(value))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def request_correlation_id(self) -> str:
+        request_id = getattr(self, "_request_id", "")
+        if not request_id:
+            request_id = secrets.token_hex(8)
+            self._request_id = request_id
+        return request_id
+
+    def log_internal_error(self, exc: Exception) -> None:
+        try:
+            path = urlparse(getattr(self, "path", "")).path or "unknown"
+        except ValueError:
+            path = "invalid"
+        print(
+            f"[{self.request_correlation_id()}] internal_error "
+            f"type={type(exc).__name__} path={path}",
+            file=sys.stderr,
+        )
+
+    def record_orchestration_telemetry(self, result: Mapping[str, Any]) -> None:
+        try:
+            ORCHESTRATION_TELEMETRY.record(result)
+        except Exception as exc:
+            print(
+                f"[{self.request_correlation_id()}] telemetry_error "
+                f"type={type(exc).__name__}",
+                file=sys.stderr,
+            )
+
+    def rate_limit_key(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        remote = ""
+        client_address = getattr(self, "client_address", None)
+        if isinstance(client_address, tuple) and client_address:
+            remote = str(client_address[0])
+        source = forwarded if DEPLOYED_ON_VERCEL and forwarded else remote or "unknown"
+        return anonymized_client_key(source, salt=RATE_LIMIT_SALT)
+
+    def enforce_rate_limit(self) -> bool:
+        decision = REQUEST_RATE_LIMITER.allow(self.rate_limit_key())
+        if decision.allowed:
+            return True
+        self.send_json(
+            {
+                "error": "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+                "retry_after_seconds": decision.retry_after_seconds,
+            },
+            HTTPStatus.TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+        return False
+
     def origin_allowed(self) -> bool:
+        request_host = self.headers.get("Host", "").strip().lower()
+        try:
+            request_host_parts = urlparse(f"//{request_host}")
+            request_hostname = request_host_parts.hostname
+            # Accessing ``port`` validates both its syntax and range.
+            request_host_parts.port
+        except ValueError:
+            return False
+        if (
+            not request_host
+            or not request_hostname
+            or request_host_parts.username is not None
+            or request_host_parts.password is not None
+            or request_host_parts.path
+            or request_host_parts.query
+            or request_host_parts.fragment
+        ):
+            return False
+        local_hosts = {"127.0.0.1", "localhost", "::1"}
+        if not DEPLOYED_ON_VERCEL and request_hostname not in local_hosts:
+            return False
+        fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+        if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
+            return False
         origin = self.headers.get("Origin", "").strip()
         if not origin:
             return True
-        origin_parts = urlparse(origin)
-        request_host = self.headers.get("Host", "").strip().lower()
-        if origin_parts.netloc.lower() == request_host and origin_parts.scheme in {"http", "https"}:
+        try:
+            origin_parts = urlparse(origin)
+            origin_parts.port
+        except ValueError:
+            return False
+        if (
+            origin_parts.username is None
+            and origin_parts.password is None
+            and not origin_parts.path
+            and not origin_parts.params
+            and not origin_parts.query
+            and not origin_parts.fragment
+            and origin_parts.netloc.lower() == request_host
+            and origin_parts.scheme in {"http", "https"}
+        ):
             return True
-        return origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
+        return False
 
     def read_json_body(self) -> dict[str, Any]:
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise ValueError("요청 Content-Type은 application/json이어야 합니다.")
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0 or length > 2_000_000:
             raise ValueError("요청 본문이 비어 있거나 너무 큽니다.")
         raw = self.rfile.read(length)
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_nonfinite_json,
+        )
         if not isinstance(payload, dict):
             raise ValueError("요청 본문은 JSON 객체여야 합니다.")
         return payload
@@ -809,13 +1821,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return user_openai_provider(api_key) if api_key.strip() else None
 
     def do_POST(self) -> None:
+        self._request_id = secrets.token_hex(8)
         if not self.origin_allowed():
             self.send_json({"error": "허용되지 않은 Origin입니다."}, HTTPStatus.FORBIDDEN)
             return
-        parsed = urlparse(self.path)
         try:
+            try:
+                parsed = urlparse(_effective_request_target(self.path))
+            except ValueError as exc:
+                raise ValueError("요청 경로가 올바르지 않습니다.") from exc
             if parsed.path not in {"/api/analysis", "/api/analysis/context", "/api/ai/connect"}:
                 self.send_json({"error": "POST 경로를 찾을 수 없습니다."}, HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path in RATE_LIMITED_POST_PATHS and not self.enforce_rate_limit():
                 return
             if parsed.path == "/api/ai/connect":
                 provider = self.request_openai_provider()
@@ -838,73 +1856,53 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if request.report_code not in {"11011", "11012", "11013", "11014"}:
                 self.send_json({"error": "보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                 return
+            if request.view not in ALLOWED_REQUEST_VIEWS:
+                self.send_json({"error": "분석 화면 값이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
+                return
+            unknown_metrics = sorted(set(request.metric_ids) - ALLOWED_REQUEST_METRICS)
+            if unknown_metrics:
+                self.send_json({"error": "분석 지표 값이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
+                return
             if request.from_year or request.to_year:
-                from_year = request.from_year or str(time.localtime().tm_year - 5)
-                to_year = request.to_year or str(time.localtime().tm_year - 1)
-                if not re.fullmatch(r"20\d{2}", from_year) or not re.fullmatch(r"20\d{2}", to_year):
-                    self.send_json({"error": "조회 연도가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
-                    return
-                if int(from_year) > int(to_year) or int(to_year) - int(from_year) > 10:
-                    self.send_json({"error": "추이 조회 범위는 최대 11개 연도입니다."}, HTTPStatus.BAD_REQUEST)
-                    return
-                results = fetch_history_results(list(request.corp_codes), from_year, to_year, request.report_code)
-                request = replace(request, from_year=from_year, to_year=to_year)
-            else:
-                year = request.year or str(time.localtime().tm_year - 1)
-                if not re.fullmatch(r"20\d{2}", year):
-                    self.send_json({"error": "조회 연도가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
-                    return
-                results = fetch_financial_results(list(request.corp_codes), year, request.report_code)
-                request = replace(request, year=year)
-            extra_context: dict[str, Any] = {}
-            try:
-                if request.from_year or request.to_year:
-                    people_records = fetch_people_history_results(
-                        list(request.corp_codes),
-                        request.from_year or from_year,
-                        request.to_year or to_year,
-                        request.report_code,
-                    )
-                else:
-                    people_records = fetch_people_results(
-                        list(request.corp_codes),
-                        request.year or year,
-                        request.report_code,
-                    )
-                people_payload: dict[str, Any] = {
-                    "status": "completed",
-                    "records": people_records,
-                }
-            except DARTError as exc:
-                people_payload = {
-                    "status": "error",
-                    "records": [],
-                    "error": str(exc),
-                }
-            extra_context["people_analytics"] = {
-                "source": "OpenDART server-side lookup",
-                "metric_catalog": PEOPLE_METRIC_CATALOG,
-                **people_payload,
-                "interpretation_rule": (
-                    "직원·임원·보상 수치는 공시된 집계값으로만 해석하고, "
-                    "인과관계나 개인별 성과를 단정하지 않는다."
-                ),
-            }
-            request_provider = self.request_openai_provider()
-            if parsed.path == "/api/analysis/context":
-                analysis_orchestrator = CONTEXT_ORCHESTRATOR
-            elif request_provider is not None:
-                analysis_orchestrator = AnalysisOrchestrator(request_provider)
-            else:
-                analysis_orchestrator = ORCHESTRATOR
-            response = analysis_orchestrator.run(
-                request,
-                results,
-                DART_METRIC_CATALOG,
-                extra_context=extra_context,
+                self.send_json(
+                    {
+                        "error": (
+                            "연도 범위 AI 분석은 evidence ledger 기반 v2가 준비될 때까지 "
+                            "비활성화되어 있습니다. 단일 연도를 선택해 주세요."
+                        ),
+                        "error_code": "range_ai_requires_orchestration_v2",
+                    },
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+                return
+            year = request.year or str(time.localtime().tm_year - 1)
+            if not re.fullmatch(r"20\d{2}", year):
+                self.send_json({"error": "조회 연도가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
+                return
+            request = replace(request, year=year)
+            observations = fetch_workforce_observations(
+                list(request.corp_codes), year, request.report_code
             )
-            response["selection"] = {"count": len(request.corp_codes), "max": MAX_COMPANIES}
+            provider = (
+                None
+                if parsed.path == "/api/analysis/context"
+                else self.request_openai_provider() or WORKFORCE_AI_PROVIDER
+            )
+            response = WorkforceAgentOrchestrator(provider=provider).run(
+                observations,
+                request_context={
+                    "question": request.question,
+                    "view": request.view,
+                    "metric_ids": request.metric_ids,
+                },
+            )
+            response["selection"] = {
+                "count": len(request.corp_codes),
+                "max": MAX_COMPANIES,
+            }
             response["source"] = "OpenDART"
+            validate_orchestration_response(response)
+            self.record_orchestration_telemetry(response)
             self.send_json(response)
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -913,21 +1911,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except OpenAIResponsesError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         except Exception as exc:
-            self.send_json({"error": f"서버 처리 중 오류가 발생했습니다: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.log_internal_error(exc)
+            self.send_json({"error": "서버 처리 중 오류가 발생했습니다."}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_GET(self) -> None:
+        self._request_id = secrets.token_hex(8)
         if not self.origin_allowed():
             self.send_json({"error": "허용되지 않은 Origin입니다."}, HTTPStatus.FORBIDDEN)
             return
-        parsed = urlparse(self.path)
         try:
+            try:
+                parsed = urlparse(_effective_request_target(self.path))
+            except ValueError as exc:
+                raise ValueError("요청 경로가 올바르지 않습니다.") from exc
+            if parsed.path in RATE_LIMITED_GET_PATHS and not self.enforce_rate_limit():
+                return
             if parsed.path == "/api/health":
                 self.send_json({
                     "ok": True,
+                    "app": _application_identity(getattr(self, "server", None)),
                     "api_key_configured": len(API_KEY) == 40,
+                    "strict_schema_enabled": STRICT_ORCHESTRATION_SCHEMA,
+                    "strict_schema_validator_ready": (
+                        not STRICT_ORCHESTRATION_SCHEMA
+                        or _ORCHESTRATION_VALIDATOR is not None
+                    ),
                     "ai_provider_configured": bool(getattr(ACTIVE_AI_PROVIDER, "configured", False)),
                     "ai_provider": getattr(ACTIVE_AI_PROVIDER, "provider_id", "not_configured"),
                     "ai_provider_name": getattr(ACTIVE_AI_PROVIDER, "provider_label", type(ACTIVE_AI_PROVIDER).__name__),
+                    "runtime": {
+                        "dart_cache": {
+                            **DART_RESPONSE_CACHE.stats(),
+                            "scope": "per_process",
+                        },
+                        "rate_limiter": {
+                            **REQUEST_RATE_LIMITER.stats(),
+                            "scope": "per_process",
+                            "distributed_enforcement": False,
+                        },
+                        "orchestration_telemetry": {
+                            **ORCHESTRATION_TELEMETRY.stats(),
+                            "scope": "per_process",
+                        },
+                    },
                 })
                 return
             if parsed.path == "/api/metadata":
@@ -944,7 +1970,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "metrics": DART_METRIC_CATALOG,
                     "people_metrics": PEOPLE_METRIC_CATALOG,
                     "executive_metrics": EXECUTIVE_METRIC_CATALOG,
-                    "views": ["overview", "compare", "trend", "people", "executives", "strategy", "radar", "scatter", "rank"],
+                    "decision_metrics": DECISION_METRIC_CATALOG,
+                    "decision_dimensions": DECISION_DIMENSION_CATALOG,
+                    "views": sorted(ALLOWED_REQUEST_VIEWS),
                     "source": "OpenDART",
                 })
                 return
@@ -969,26 +1997,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if start_year > end_year or end_year - start_year > 10:
                     self.send_json({"error": "추이 조회 범위는 최대 11개 연도입니다."}, HTTPStatus.BAD_REQUEST)
                     return
+                enforce_history_observation_budget(
+                    codes,
+                    start_year,
+                    end_year,
+                    maximum=MAX_FINANCIAL_HISTORY_OBSERVATIONS,
+                )
                 if report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
-                companies = {company["corp_code"]: company for company in load_corp_codes()}
-                selected = [companies[code] for code in codes if code in companies]
-                if len(selected) != len(codes):
-                    self.send_json({"error": "알 수 없는 기업 코드가 포함되어 있습니다."}, HTTPStatus.BAD_REQUEST)
-                    return
-                jobs = [(company, str(year)) for company in selected for year in range(start_year, end_year + 1)]
-                by_code: dict[str, dict[str, Any]] = {
-                    company["corp_code"]: {"company": company, "years": []} for company in selected
-                }
-                with ThreadPoolExecutor(max_workers=min(12, len(jobs))) as executor:
-                    futures = [executor.submit(fetch_company_financials, company, year, report_code) for company, year in jobs]
-                    for future in as_completed(futures):
-                        result = future.result()
-                        by_code[result["company"]["corp_code"]]["years"].append(result)
-                history = list(by_code.values())
-                for item in history:
-                    item["years"].sort(key=lambda value: int(value.get("year", from_year)))
+                history = fetch_history_results(codes, from_year, to_year, report_code)
                 self.send_json({"from_year": from_year, "to_year": to_year, "report_code": report_code, "results": history})
                 return
             if parsed.path == "/api/workforce/orchestration":
@@ -1007,14 +2025,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "보고서 코드가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
                 observations = fetch_workforce_observations(codes, year, report_code)
-                request_provider = self.request_openai_provider()
-                workforce_orchestrator = (
-                    WorkforceAgentOrchestrator(provider=request_provider)
-                    if request_provider is not None
-                    else WORKFORCE_ORCHESTRATOR
-                )
-                result = workforce_orchestrator.run(observations)
+                result = WorkforceAgentOrchestrator(provider=None).run(observations)
+                result["selection"] = {"count": len(codes), "max": MAX_COMPANIES}
                 result["source"] = "OpenDART"
+                validate_orchestration_response(result)
+                self.record_orchestration_telemetry(result)
                 self.send_json(result)
                 return
             if parsed.path == "/api/executives/history":
@@ -1034,6 +2049,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if start_year > end_year or end_year - start_year > 10:
                     self.send_json({"error": "조회 기간은 최대 11개 연도입니다."}, HTTPStatus.BAD_REQUEST)
                     return
+                enforce_history_observation_budget(
+                    codes,
+                    start_year,
+                    end_year,
+                    maximum=MAX_PEOPLE_HISTORY_OBSERVATIONS,
+                )
                 if report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "보고서 코드가 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
@@ -1079,6 +2100,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if start_year > end_year or end_year - start_year > 10:
                     self.send_json({"error": "People 추이 조회 범위는 최대 11개 연도입니다."}, HTTPStatus.BAD_REQUEST)
                     return
+                enforce_history_observation_budget(
+                    codes,
+                    start_year,
+                    end_year,
+                    maximum=MAX_PEOPLE_HISTORY_OBSERVATIONS,
+                )
                 if report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
@@ -1115,17 +2142,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"20\d{2}", year) or report_code not in {"11011", "11012", "11013", "11014"}:
                     self.send_json({"error": "연도 또는 보고서 형식이 올바르지 않습니다."}, HTTPStatus.BAD_REQUEST)
                     return
-                companies = {company["corp_code"]: company for company in load_corp_codes()}
-                selected = [companies[code] for code in codes if code in companies]
-                if len(selected) != len(codes):
-                    self.send_json({"error": "알 수 없는 기업 코드가 포함되어 있습니다."}, HTTPStatus.BAD_REQUEST)
-                    return
-                results: list[dict[str, Any]] = []
-                with ThreadPoolExecutor(max_workers=min(5, len(selected))) as executor:
-                    futures = [executor.submit(fetch_company_financials, company, year, report_code) for company in selected]
-                    for future in as_completed(futures):
-                        results.append(future.result())
-                results.sort(key=lambda item: codes.index(item["company"]["corp_code"]))
+                results = fetch_financial_results(codes, year, report_code)
                 self.send_json({"year": year, "report_code": report_code, "results": results})
                 return
             if parsed.path == "/" or parsed.path == "/index.html":
@@ -1138,8 +2155,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "페이지를 찾을 수 없습니다."}, HTTPStatus.NOT_FOUND)
         except DARTError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self.send_json({"error": f"서버 처리 중 오류가 발생했습니다: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.log_internal_error(exc)
+            self.send_json({"error": "서버 처리 중 오류가 발생했습니다."}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def serve_static(self, relative: str, content_type: str | None = None) -> None:
         target = (STATIC_DIR / relative).resolve()
@@ -1153,17 +2173,73 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type or types.get(target.suffix, "application/octet-stream"))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Strict-Transport-Security", HSTS_HEADER)
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'",
+        )
+        self.send_header("X-Request-ID", self.request_correlation_id())
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
 
-if __name__ == "__main__":
+def run_local_server() -> None:
     STATIC_DIR.mkdir(exist_ok=True)
-    print(f"DART Workforce Intelligence: http://127.0.0.1:{PORT}")
-    http_server = ThreadingHTTPServer(("127.0.0.1", PORT), DashboardHandler)
+    http_server = create_local_http_server(
+        DashboardHandler,
+        preferred_port=PORT,
+        allow_fallback=not PORT_EXPLICITLY_CONFIGURED,
+    )
+    actual_port = int(http_server.server_address[1])
+    base_url = f"http://127.0.0.1:{actual_port}"
+    print(
+        f"{APP_NAME} {APP_VERSION} ({BUILD_ID}): {base_url}",
+        flush=True,
+    )
+    if OPEN_BROWSER_ON_START:
+        threading.Thread(
+            target=open_browser_when_ready,
+            kwargs={"base_url": base_url, "instance_id": INSTANCE_ID},
+            daemon=True,
+            name="dart-browser-launch",
+        ).start()
     try:
-        webbrowser.open(f"http://127.0.0.1:{PORT}")
-    except Exception:
+        http_server.serve_forever()
+    finally:
+        http_server.server_close()
+
+
+def _show_startup_error(message: str) -> None:
+    if os.name != "nt" or not FROZEN_RUNTIME:
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, message, APP_NAME, 0x10)
+    except (AttributeError, OSError):
         pass
-    http_server.serve_forever()
+
+
+def main() -> int:
+    try:
+        run_local_server()
+    except KeyboardInterrupt:
+        return 0
+    except OSError as exc:
+        message = f"{APP_NAME}을 시작하지 못했습니다.\n\n{exc}"
+        print(message, file=sys.stderr)
+        _show_startup_error(message)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -8,6 +8,7 @@ included in the model input or response payload.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
@@ -19,6 +20,7 @@ OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_MAX_OUTPUT_TOKENS = 1800
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 BRIEFING_INSTRUCTIONS = """당신은 기업 공시 기반 HR Analytics 브리핑 작성자입니다.
 반드시 제공된 OpenDART 관측값과 출처만 사용하고, 누락된 수치나 원인을 만들어내지 마세요.
@@ -81,10 +83,12 @@ class OpenAIResponsesProvider:
     def analyze(self, *, prompt: str, context: Mapping[str, Any]) -> str:
         if not self.configured:
             raise OpenAIResponsesError("OPENAI_API_KEY가 설정되지 않았습니다.")
+        authorization = self._authorization_header()
+        model = self._validated_model()
 
         body = json.dumps(
             {
-                "model": self.model,
+                "model": model,
                 "instructions": self.instructions,
                 "input": prompt,
                 "max_output_tokens": self.max_output_tokens,
@@ -98,33 +102,35 @@ class OpenAIResponsesProvider:
             data=body,
             method="POST",
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": authorization,
                 "Content-Type": "application/json",
                 "User-Agent": "dart-workforce-briefing/1.0",
             },
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
-                document = json.loads(response.read().decode("utf-8"))
+                document = _read_json_response(response)
         except HTTPError as exc:
-            message = _http_error_message(exc)
+            message = (
+                f"OpenAI 모델 '{model}'을 사용할 수 없습니다. 모델명과 API Key 권한을 확인해 주세요."
+                if exc.code == 404
+                else _safe_http_error_message(exc.code)
+            )
+            exc.close()
             raise OpenAIResponsesError(f"OpenAI API 요청 실패 ({exc.code}): {message}") from exc
-        except URLError as exc:
-            raise OpenAIResponsesError(f"OpenAI API에 연결하지 못했습니다: {exc.reason}") from exc
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (OSError, TimeoutError, URLError) as exc:
+            raise OpenAIResponsesError("OpenAI API에 연결하지 못했습니다.") from exc
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             raise OpenAIResponsesError("OpenAI API 응답을 해석하지 못했습니다.") from exc
 
         if not isinstance(document, Mapping):
             raise OpenAIResponsesError("OpenAI API 응답 형식이 올바르지 않습니다.")
         if document.get("error"):
-            error = document["error"]
-            message = error.get("message") if isinstance(error, Mapping) else str(error)
-            raise OpenAIResponsesError(str(message or "OpenAI API 오류"))
+            raise OpenAIResponsesError("OpenAI API가 요청을 처리하지 못했습니다.")
 
         output_text = _extract_output_text(document)
         if not output_text:
-            status = str(document.get("status") or "unknown")
-            raise OpenAIResponsesError(f"OpenAI API가 텍스트를 반환하지 않았습니다. 상태: {status}")
+            raise OpenAIResponsesError("OpenAI API가 텍스트를 반환하지 않았습니다.")
         return output_text
 
     def validate_connection(self) -> None:
@@ -132,30 +138,53 @@ class OpenAIResponsesProvider:
 
         if not self.configured:
             raise OpenAIResponsesError("OpenAI API Key가 입력되지 않았습니다.")
+        authorization = self._authorization_header()
+        model = self._validated_model()
         request = Request(
             OPENAI_MODELS_URL,
             method="GET",
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": authorization,
                 "User-Agent": "dart-workforce-briefing/1.0",
             },
         )
         try:
             with urlopen(request, timeout=min(self.timeout_seconds, 30)) as response:
-                document = json.loads(response.read().decode("utf-8"))
+                document = _read_json_response(response)
         except HTTPError as exc:
-            message = _http_error_message(exc)
+            message = _safe_http_error_message(exc.code)
+            exc.close()
             raise OpenAIResponsesError(
                 f"OpenAI API 연결 확인 실패 ({exc.code}): {message}"
             ) from exc
-        except URLError as exc:
-            raise OpenAIResponsesError(
-                f"OpenAI API에 연결하지 못했습니다: {exc.reason}"
-            ) from exc
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (OSError, TimeoutError, URLError) as exc:
+            raise OpenAIResponsesError("OpenAI API에 연결하지 못했습니다.") from exc
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             raise OpenAIResponsesError("OpenAI API 연결 응답을 해석하지 못했습니다.") from exc
         if not isinstance(document, Mapping) or not isinstance(document.get("data"), list):
             raise OpenAIResponsesError("OpenAI API 연결 응답 형식이 올바르지 않습니다.")
+        available_models = {
+            item.get("id")
+            for item in document["data"]
+            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+        }
+        if model not in available_models:
+            raise OpenAIResponsesError(
+                f"OpenAI 모델 '{model}'을 이 API Key로 사용할 수 없습니다. "
+                "OPENAI_MODEL 설정과 모델 접근 권한을 확인해 주세요."
+            )
+
+    def _authorization_header(self) -> str:
+        key = self.api_key.strip()
+        if not re.fullmatch(r"sk-[A-Za-z0-9_-]{4,509}", key):
+            raise OpenAIResponsesError("OpenAI API Key 형식이 올바르지 않습니다.")
+        return f"Bearer {key}"
+
+    def _validated_model(self) -> str:
+        model = self.model.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", model):
+            raise OpenAIResponsesError("OPENAI_MODEL 형식이 올바르지 않습니다.")
+        return model
 
 
 def _extract_output_text(document: Mapping[str, Any]) -> str:
@@ -182,21 +211,37 @@ def _extract_output_text(document: Mapping[str, Any]) -> str:
     return "\n\n".join(texts)
 
 
-def _http_error_message(exc: HTTPError) -> str:
-    try:
-        document = json.loads(exc.read().decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return str(exc.reason or "요청 오류")
-    if isinstance(document, Mapping):
-        error = document.get("error")
-        if isinstance(error, Mapping) and error.get("message"):
-            return str(error["message"])
-    return str(exc.reason or "요청 오류")
+def _read_json_response(response: Any) -> Any:
+    """Read one bounded UTF-8 JSON response from an untrusted provider."""
+
+    raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise OpenAIResponsesError("OpenAI API 응답이 허용된 크기를 초과했습니다.")
+    return json.loads(raw.decode("utf-8"), parse_constant=_reject_nonfinite_json)
+
+
+def _reject_nonfinite_json(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
+def _safe_http_error_message(status: int) -> str:
+    """Map an HTTP status without reflecting an untrusted provider body."""
+
+    if status in {401, 403}:
+        return "API Key 인증에 실패했습니다."
+    if status == 429:
+        return "요청 한도에 도달했습니다."
+    if status == 400:
+        return "요청 구성 또는 모델 설정을 확인해 주세요."
+    if status >= 500:
+        return "공급자 서비스가 일시적으로 응답하지 않습니다."
+    return "공급자가 요청을 거부했습니다."
 
 
 __all__ = [
     "BRIEFING_INSTRUCTIONS",
     "DEFAULT_OPENAI_MODEL",
+    "MAX_RESPONSE_BYTES",
     "OPENAI_MODELS_URL",
     "OpenAIResponsesError",
     "OpenAIResponsesProvider",

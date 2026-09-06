@@ -1,0 +1,518 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dart-hr-briefing.local/schemas/workforce-orchestration-v2.schema.json",
+  "title": "DART Workforce Orchestration v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "status",
+    "input",
+    "facts",
+    "benchmarks",
+    "quality",
+    "evidence",
+    "decision_support",
+    "privacy",
+    "policy",
+    "provider",
+    "provider_validation",
+    "validation",
+    "execution",
+    "trace"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "run_id": {"type": "string", "pattern": "^RUN-[0-9a-f]{12}$"},
+    "status": {"enum": ["completed", "partial", "no_data", "error"]},
+    "request": {"type": "object"},
+    "input": {
+      "type": "object",
+      "required": ["status", "issues"],
+      "properties": {
+        "status": {"enum": ["passed", "no_data", "error", "not_run"]},
+        "issues": {"type": "array"}
+      }
+    },
+    "facts": {
+      "type": "object",
+      "required": ["records"],
+      "properties": {"records": {"type": "array"}}
+    },
+    "benchmarks": {
+      "type": "object",
+      "required": ["rankings"],
+      "properties": {"rankings": {"type": "object"}}
+    },
+    "quality": {
+      "type": "object",
+      "required": ["records"],
+      "properties": {"records": {"type": "array"}}
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["ledger", "summary", "snapshots"],
+      "properties": {
+        "ledger": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidenceItem"}
+        },
+        "summary": {"$ref": "#/$defs/evidenceSummary"},
+        "snapshots": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sourceSnapshot"}
+        }
+      }
+    },
+    "decision_support": {"$ref": "#/$defs/decisionSupport"},
+    "privacy": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {"status": {"enum": ["passed", "not_run"]}}
+    },
+    "policy": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["allowed", "blocked", "not_run"]},
+        "mode": {"enum": ["full", "limited", "none"]},
+        "reason_codes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "provider": {"$ref": "#/$defs/provider"},
+    "provider_status": {"type": "string"},
+    "provider_result": {},
+    "provider_validation": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["passed", "rejected", "skipped", "not_run"]}
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {"status": {"enum": ["passed", "not_run"]}}
+    },
+    "execution": {
+      "type": "object",
+      "required": ["duration_ms", "agent_counts"],
+      "properties": {
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "agent_counts": {"type": "object"}
+      }
+    },
+    "trace": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/traceItem"}
+    },
+    "prompt": {"type": ["string", "null"]},
+    "prompt_handoff": {"type": "object"},
+    "selection": {
+      "type": "object",
+      "required": ["count", "max"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "max": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "source": {"const": "OpenDART"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "evidenceSummary": {
+      "type": "object",
+      "required": [
+        "observation_count",
+        "evidence_count",
+        "source_complete_evidence_count",
+        "source_incomplete_evidence_count",
+        "linked_observation_count",
+        "quality_counts",
+        "restatement_verification"
+      ],
+      "properties": {
+        "observation_count": {"type": "integer", "minimum": 0},
+        "evidence_count": {"type": "integer", "minimum": 0},
+        "source_complete_evidence_count": {"type": "integer", "minimum": 0},
+        "source_incomplete_evidence_count": {"type": "integer", "minimum": 0},
+        "linked_observation_count": {"type": "integer", "minimum": 0},
+        "quality_counts": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "restatement_verification": {"enum": ["not_performed", "verified_current"]}
+      },
+      "additionalProperties": false
+    },
+    "decisionSupport": {
+      "type": "object",
+      "required": ["readiness", "briefs", "data_gaps", "signal_catalog"],
+      "properties": {
+        "readiness": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/readinessItem"}
+        },
+        "briefs": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/decisionBrief"}
+        },
+        "data_gaps": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/dataGap"}
+        },
+        "signal_catalog": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/signalCatalogItem"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "readinessCore": {
+      "type": "object",
+      "required": [
+        "dimension_id",
+        "status",
+        "reason_codes",
+        "metric_ids",
+        "selected_metric_id",
+        "selected_metric_label",
+        "selection_reason",
+        "metric_assessments",
+        "signal_type",
+        "evidence_ids",
+        "coverage",
+        "confidence",
+        "interpretation_limit",
+        "next_data"
+      ],
+      "properties": {
+        "dimension_id": {"type": "string"},
+        "status": {"enum": ["ready", "directional_only", "blocked"]},
+        "reason_codes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "metric_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "selected_metric_id": {"type": ["string", "null"]},
+        "selected_metric_label": {"type": ["string", "null"]},
+        "selection_reason": {"type": "string", "minLength": 1},
+        "metric_assessments": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/metricAssessment"}
+        },
+        "signal_type": {"enum": ["lagging", "early_warning_proxy", "benchmark", "data_gap"]},
+        "evidence_ids": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^EV-[0-9a-f]{12}$"},
+          "uniqueItems": true
+        },
+        "coverage": {
+          "type": "object",
+          "required": ["comparable_observation_count", "total_observation_count"],
+          "properties": {
+            "comparable_observation_count": {"type": "integer", "minimum": 0},
+            "total_observation_count": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "confidence": {"enum": ["high", "medium", "low"]},
+        "interpretation_limit": {"type": "string"},
+        "next_data": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3}
+      }
+    },
+    "readinessItem": {
+      "allOf": [
+        {"$ref": "#/$defs/readinessCore"}
+      ],
+      "unevaluatedProperties": false
+    },
+    "decisionBrief": {
+      "allOf": [
+        {"$ref": "#/$defs/readinessCore"},
+        {
+          "type": "object",
+          "required": ["brief_id", "question", "conclusion", "decision_action", "cohort_limit", "peer_context", "self_trajectory", "cannot_tell"],
+          "properties": {
+            "brief_id": {"type": "string"},
+            "question": {"type": "string"},
+            "conclusion": {"type": "string", "minLength": 1},
+            "decision_action": {"type": "string", "minLength": 1},
+            "cohort_limit": {"type": "string", "minLength": 1},
+            "peer_context": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/peerPosition"}
+            },
+            "self_trajectory": {
+              "type": "object",
+              "required": ["status", "reason_code"],
+              "properties": {
+                "status": {"const": "not_available"},
+                "reason_code": {"const": "single_period_orchestration_input"}
+              },
+              "additionalProperties": false
+            },
+            "cannot_tell": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "metricAssessment": {
+      "type": "object",
+      "required": [
+        "metric_id",
+        "metric_label",
+        "signal_type",
+        "status",
+        "evidence_ids",
+        "coverage",
+        "quality_complete",
+        "uses_fallback_metric",
+        "interpretation_limit"
+      ],
+      "properties": {
+        "metric_id": {"type": "string"},
+        "metric_label": {"type": "string", "minLength": 1},
+        "signal_type": {"enum": ["lagging", "early_warning_proxy", "benchmark", "data_gap"]},
+        "status": {"enum": ["ready", "directional_only", "blocked"]},
+        "evidence_ids": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^EV-[0-9a-f]{12}$"},
+          "uniqueItems": true
+        },
+        "coverage": {
+          "type": "object",
+          "required": ["comparable_observation_count", "total_observation_count"],
+          "properties": {
+            "comparable_observation_count": {"type": "integer", "minimum": 0},
+            "total_observation_count": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "quality_complete": {"type": "boolean"},
+        "uses_fallback_metric": {"type": "boolean"},
+        "interpretation_limit": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "peerPosition": {
+      "type": "object",
+      "required": ["observation_id", "company", "rank", "peer_count", "value", "peer_median", "peer_delta", "evidence_id"],
+      "properties": {
+        "observation_id": {"type": "string", "pattern": "^OBS-[0-9a-f]{12}$"},
+        "company": {"$ref": "#/$defs/company"},
+        "rank": {"type": "integer", "minimum": 1},
+        "peer_count": {"type": "integer", "minimum": 1},
+        "value": {"type": "number"},
+        "peer_median": {"type": ["number", "null"]},
+        "peer_delta": {"type": ["number", "null"]},
+        "evidence_id": {"type": "string", "pattern": "^EV-[0-9a-f]{12}$"}
+      },
+      "additionalProperties": false
+    },
+    "dataGap": {
+      "type": "object",
+      "required": ["observation_id", "gap_type", "details"],
+      "properties": {
+        "observation_id": {"type": "string", "pattern": "^OBS-[0-9a-f]{12}$"},
+        "gap_type": {"enum": ["missing_disclosure", "partial_disclosure", "comparability_limit", "source_link_gap", "calculation_blocked"]},
+        "details": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "signalCatalogItem": {
+      "type": "object",
+      "required": ["metric_id", "signal_type", "interpretation_limit"],
+      "properties": {
+        "metric_id": {"type": "string"},
+        "signal_type": {"enum": ["lagging", "early_warning_proxy", "benchmark", "data_gap"]},
+        "interpretation_limit": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "company": {
+      "type": "object",
+      "properties": {
+        "corp_code": {"type": "string"},
+        "corp_name": {"type": "string"},
+        "stock_code": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "evidenceItem": {
+      "type": "object",
+      "required": [
+        "evidence_id",
+        "observation_id",
+        "company",
+        "year",
+        "report_code",
+        "metric_id",
+        "value",
+        "source_components",
+        "source_component_coverage",
+        "source_coverage_complete",
+        "source_urls",
+        "quality_status"
+      ],
+      "properties": {
+        "evidence_id": {"type": "string", "pattern": "^EV-[0-9a-f]{12}$"},
+        "observation_id": {"type": "string", "pattern": "^OBS-[0-9a-f]{12}$"},
+        "company": {"$ref": "#/$defs/company"},
+        "year": {"type": "string", "pattern": "^20[0-9]{2}$"},
+        "report_code": {"enum": ["11011", "11012", "11013", "11014"]},
+        "metric_id": {"type": "string"},
+        "value": {"type": "number"},
+        "unit": {"type": ["string", "null"]},
+        "source_components": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "financial_status",
+              "employee_status",
+              "executive_status",
+              "unregistered_executive_pay",
+              "normalized_workforce"
+            ]
+          }
+        },
+        "source_component_coverage": {
+          "type": "object",
+          "additionalProperties": {"type": "boolean"}
+        },
+        "source_coverage_complete": {"type": "boolean"},
+        "source_urls": {"$ref": "#/$defs/sourceUrls"},
+        "receipt_numbers": {"$ref": "#/$defs/receiptNumbers"},
+        "source_fingerprint": {"type": ["string", "null"]},
+        "quality_status": {"enum": ["complete", "partial", "no_data", "error"]},
+        "derivation": {"type": "string"}
+      }
+    },
+    "sourceSnapshot": {
+      "type": "object",
+      "required": [
+        "observation_id",
+        "company",
+        "year",
+        "report_code",
+        "source_urls",
+        "receipt_numbers",
+        "sources_by_component",
+        "content_fingerprint",
+        "raw_row_counts",
+        "errors"
+      ],
+      "properties": {
+        "observation_id": {"type": "string", "pattern": "^OBS-[0-9a-f]{12}$"},
+        "company": {"$ref": "#/$defs/company"},
+        "year": {"type": "string"},
+        "report_code": {"type": "string"},
+        "source_urls": {"$ref": "#/$defs/sourceUrls"},
+        "receipt_numbers": {"$ref": "#/$defs/receiptNumbers"},
+        "sources_by_component": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "financial_status",
+              "employee_status",
+              "executive_status",
+              "unregistered_executive_pay"
+            ]
+          },
+          "additionalProperties": {"$ref": "#/$defs/sourceReference"}
+        },
+        "content_fingerprint": {"type": "string", "pattern": "^SHA256-[0-9a-f]{24}$"},
+        "raw_row_counts": {"type": "object"},
+        "errors": {"type": "array"}
+      }
+    },
+    "sourceUrls": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^https://(?:dart|opendart)\\.fss\\.or\\.kr/"
+      },
+      "uniqueItems": true
+    },
+    "receiptNumbers": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[0-9]{14}$"},
+      "uniqueItems": true
+    },
+    "sourceReference": {
+      "type": "object",
+      "required": ["source_urls", "receipt_numbers"],
+      "properties": {
+        "source_urls": {"$ref": "#/$defs/sourceUrls"},
+        "receipt_numbers": {"$ref": "#/$defs/receiptNumbers"}
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": ["status", "result"],
+      "properties": {
+        "id": {"type": "string"},
+        "name": {"type": "string"},
+        "status": {
+          "enum": ["completed", "not_configured", "no_result", "error", "skipped", "rejected"]
+        },
+        "prompt": {"type": ["string", "null"]},
+        "result": {},
+        "error": {"type": "string"},
+        "context_summary": {"$ref": "#/$defs/providerContextSummary"}
+      }
+    },
+    "providerContextSummary": {
+      "type": "object",
+      "required": [
+        "requested_metric_ids",
+        "included_metric_ids",
+        "included_evidence_ids",
+        "evidence_count",
+        "candidate_evidence_count",
+        "evidence_limit",
+        "truncated",
+        "decision_support_status"
+      ],
+      "properties": {
+        "requested_metric_ids": {
+          "type": "array",
+          "items": {"type": "string"},
+          "maxItems": 10,
+          "uniqueItems": true
+        },
+        "included_metric_ids": {
+          "type": "array",
+          "items": {"type": "string"},
+          "maxItems": 24,
+          "uniqueItems": true
+        },
+        "included_evidence_ids": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^EV-[0-9a-f]{12}$"},
+          "maxItems": 160,
+          "uniqueItems": true
+        },
+        "evidence_count": {"type": "integer", "minimum": 0, "maximum": 160},
+        "candidate_evidence_count": {"type": "integer", "minimum": 0},
+        "evidence_limit": {"const": 160},
+        "truncated": {"type": "boolean"},
+        "decision_support_status": {"enum": ["available", "limited"]}
+      },
+      "additionalProperties": false
+    },
+    "traceItem": {
+      "type": "object",
+      "required": ["agent", "status", "duration_ms", "depends_on"],
+      "properties": {
+        "agent": {"type": "string"},
+        "status": {"enum": ["completed", "error", "blocked"]},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "depends_on": {"type": "array", "items": {"type": "string"}},
+        "error": {"type": "string"}
+      }
+    }
+  }
+}

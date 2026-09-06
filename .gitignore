@@ -2,7 +2,9 @@
 .env.*
 !.env.example
 __pycache__/
+*.egg-info/
 data/
+.coverage
 
 # Local build, cache, and browser QA artifacts
 build/
@@ -10,7 +12,7 @@ build/
 .ruff_cache/
 .playwright-cli/
 *.previous.exe
-*.visual-check.json
+*.visual-check.*
 /DARTStructure.exe
 
 # Generated visual QA intermediates (the README uses the final PNG/GIF only)
@@ -21,3 +23,6 @@ docs/assets/dashboard-browser.png
 docs/assets/dashboard-home-content.png
 reports/overnight_sessions/
 video_work/
+training_deck/
+
+.vercel

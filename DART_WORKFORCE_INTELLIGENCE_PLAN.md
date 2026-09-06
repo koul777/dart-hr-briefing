@@ -139,8 +139,7 @@ API: `unrstExctvMendngSttus.json`
 - `GET /api/people/history`: 직원·보상 연도별 추이
 - `GET /api/executives`: 특정 연도 임원 구조 요약
 - `GET /api/executives/history`: 임원 구조 연도별 추이
-- `GET /api/workforce/orchestration`: DART 원자료를 에이전트 DAG로 실행한 통합 분석
-- `GET /api/workforce/benchmark`: 여러 기업의 통합 비교 응답
+- `GET /api/workforce/orchestration`: DART 원자료를 에이전트 DAG로 실행하고 여러 기업의 `benchmarks.rankings`까지 포함하는 통합 비교 응답
 
 각 API는 접수번호와 원문 URL을 반환하고, 누락·조회 실패·집계 방식을 명시한다.
 
@@ -170,18 +169,21 @@ API: `unrstExctvMendngSttus.json`
 - 여성 임원 비율
 - 최대주주 관련 임원 비율
 
-### Tenure & Succession
+### Leadership Tenure & Governance Disclosure
 
 - 평균 임원 재직기간
 - 임기 만료 예정 임원 수
 - 대표이사·사외이사 임기 현황
 - 장기 재직·신규 선임 구성
+- 공개 임기·구성 공시는 승계 준비도나 이사회 실효성 판정이 아님을 고정 표시
+- 실제 승계 검토 전 핵심보직 후보군·리더십 역량 기준·내부 임기 캘린더 확인
 
 ### Peer Benchmark
 
 - 동일 연도·동일 보고서 기준 기업 비교
 - 순위와 상대 지수
 - 원문 근거 확인
+- 사용자가 선택한 집합 내부의 기술적 정렬이며 산업·규모 보정이나 성과 우열을 뜻하지 않음
 
 ### Data Quality
 
@@ -214,6 +216,8 @@ request + DART raw bundle
         |
         v
 source_snapshot
+        |
+input_validator
    |       |        |
    v       v        v
 employee  executive compensation
@@ -226,12 +230,20 @@ agent     agent     agent
        benchmark agent
              |
              v
-     privacy/report guard
+       privacy_guard
              |
-             +--> optional Claude MCP interpretation
+       evidence_ledger
+             |
+       decision_support
+             |
+       provider_policy
+             |
+             +--> optional OpenAI / Claude MCP interpretation
+             |
+    provider_output_guard
              |
              v
-       structured response
+       response_guard
 ```
 
 ### 12.3 에이전트 책임
@@ -239,34 +251,57 @@ agent     agent     agent
 | 에이전트 | 책임 | 외부 호출 |
 |---|---|---|
 | `source_snapshot` | 기업·연도·보고서·접수번호와 원자료 존재 여부 확인 | 없음 |
+| `input_validator` | 중복 관측·기간·보고서·입력 구조 검증 | 없음 |
 | `employee_normalizer` | 직원·정규직·계약직·근속·급여 정규화 | 없음 |
 | `executive_normalizer` | 임원·이사회·성별·재직기간·임기 지표 정규화 | 없음 |
 | `compensation_normalizer` | 미등기임원 보수 정규화 | 없음 |
 | `quality_auditor` | 누락·중복·분모·API 오류·집계 경고 통합 | 없음 |
 | `benchmark_calculator` | 기업별 비율·증감률·상대 비교 계산 | 없음 |
 | `privacy_guard` | 이름·생년월·경력 등 개인 원자료가 결과에 남지 않았는지 검증 | 없음 |
-| `strategy_interpreter` | 검증된 사실을 전략 가설·KPI·제한사항으로 해석 | 선택적 Claude MCP |
-| `response_guard` | 응답 스키마와 근거·가설 분리 최종 검증 | 없음 |
+| `evidence_ledger` | 지표별 원천 컴포넌트·접수번호·지문·계산식을 결정적 evidence ID로 연결 | 없음 |
+| `decision_support` | 전체 후보 지표의 커버리지를 평가하고 대표 지표·선정 이유·선택 집합 중앙값·판단 한계·다음 내부 데이터를 결정론적으로 생성 | 없음 |
+| `provider_policy` | 품질·개인정보·근거 조건을 충족한 관측만 외부 AI에 허용 | 없음 |
+| `strategy_interpreter` | 검증된 사실을 전략 가설·KPI·제한사항으로 해석 | 선택적 OpenAI / Claude MCP |
+| `provider_output_guard` | 개인정보·미등록 근거·근거 없는 숫자·모순 수치·인과 단정·가공 인물 언급을 차단 | 없음 |
+| `response_guard` | 응답 스키마와 evidence·결정지원 지표 참조 무결성을 최종 검증 | 없음 |
 
 ### 12.4 오케스트레이션 원칙
 
 1. 직원·임원·보상 정규화 에이전트는 서로 독립적으로 실행할 수 있다.
 2. 품질검사 이전에는 전략 해석을 실행하지 않는다.
 3. `no_data`, `partial`, `error`를 구분하고 실패를 0으로 대체하지 않는다.
-4. Claude MCP는 DART 데이터를 조회하지 않고, 검증된 집계 컨텍스트만 해석한다.
-5. Claude MCP가 없거나 실패해도 사실·지표·품질 결과는 반환한다.
+4. 외부 AI는 DART 데이터를 조회하지 않고, 검증된 집계 컨텍스트만 해석한다.
+5. AI provider가 없거나 실패해도 사실·지표·품질·근거 원장은 반환한다.
 6. 개인 임원 원자료는 `privacy_guard`를 통과한 뒤에만 외부 분석 경계로 전달한다.
 7. 각 단계의 실행 상태와 오류는 `trace`에 남긴다.
+8. 다중 지표 질문은 가장 잘 채워진 한 지표만으로 `ready`가 되지 않으며 모든 선언 지표의 커버리지를 반영한다.
+9. `peer`는 사용자가 선택한 기업 집합의 중앙값 비교이며 산업·규모 보정 benchmark로 과장하지 않는다.
+10. 별도 이력 API의 2시점 방향은 참고 신호이며 단일연도 readiness 산정에 포함하지 않는다.
+11. 모든 후보 지표가 연결되어도 대표지표의 비교 가능 기업이 4개 미만이면 `ready`를 금지한다.
+12. 각 주 브리프는 첫 번째 내부 데이터 과제를 연결한 `decision_action`과 산업·규모·사업모델 비보정 `cohort_limit`을 함께 제공한다.
 
 ### 12.5 표준 오케스트레이션 응답
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "run_id": "RUN-xxxxxxxxxxxx",
   "status": "completed",
   "facts": {},
   "benchmarks": {},
   "quality": {},
+  "evidence": {
+    "ledger": [],
+    "summary": {},
+    "snapshots": []
+  },
+  "decision_support": {
+    "readiness": [],
+    "briefs": [],
+    "data_gaps": [],
+    "signal_catalog": []
+  },
+  "policy": {"status": "allowed", "mode": "full"},
   "provider": {
     "status": "not_configured",
     "result": null
@@ -278,7 +313,10 @@ agent     agent     agent
 }
 ```
 
-`provider.status`는 `not_configured`, `completed`, `error`, `skipped` 중 하나이며, `provider.result`가 없어도 `facts`와 `benchmarks`는 유효해야 한다.
+`provider.status`는 `not_configured`, `completed`, `no_result`, `error`, `skipped`,
+`rejected` 중 하나다. `provider.result`가 없어도 `facts`, `benchmarks`, `evidence`는
+유효해야 한다. 기계 검증 계약은
+[`schemas/workforce_orchestration_v2.schema.json`](schemas/workforce_orchestration_v2.schema.json)에 고정한다.
 
 ## 13. 개발 단계와 완료 조건
 
@@ -324,7 +362,7 @@ agent     agent     agent
 - 샘플 응답 기반 단위 테스트 통과
 - API 키 미설정 시 안전한 오류 표시
 - 누락·중복·분모 0 테스트 통과
-- 로컬 서버·패키지·정적 자산 smoke 통과; 브라우저 캡처 회귀는 backend 연결 후 수행
+- 로컬 서버·패키지·정적 자산 smoke 및 backend 연결 headless Edge 캡처 회귀 통과
 
 ## 14. 현재 진행 상태
 
@@ -377,6 +415,10 @@ agent     agent     agent
 
 ### Strategy Brief 완료 조건
 
+- 생산성·보상 지속가능성·인력구조의 3개 결정 브리프와 5개 전체 readiness가 표시됨
+- 각 브리프에 대표 지표·선정 이유·모든 후보 지표의 커버리지·선택 집합 중앙값 위치가 표시됨
+- 회사별 결론은 원인·우열을 단정하지 않고 `cannot tell`과 다음 내부 데이터로 연결됨
+- 이력 방향은 `readiness 산정 제외`로 명시됨
 - 선택 기업별 이익 체력 카드가 표시됨
 - 이익→보상 연동 흐름이 실제 DART 값으로 계산됨
 - 연도별 영업이익·평균 급여 추이가 표시됨
@@ -385,9 +427,41 @@ agent     agent     agent
 - 내부 HR 데이터 필요 영역이 명시됨
 - 출처와 한계가 화면 하단에 표시됨
 
-핵심 구현은 완료되었으며, 후속 작업은 DART 기반 시각화 고도화·브라우저 캡처 회귀 검증·선택적 AI 해석 계층 연결이다.
+핵심 구현과 선택적 AI 해석 계층 연결은 완료되었다. 후속 작업은 기간 evidence 계약,
+분산 rate limit·비용 예산, 산업·보고서 유형별 fixture 확대, 계약 테스트를 유지한
+HTTP 라우팅·입력 검증·결과 평가 고복잡도 분해다.
+
+### 2026-08-31 기준 다음 3개 실행 블록
+
+1. 운영 전 필수 보호계층
+   - 목표: 공개 배포 전 프로세스 단위 cache·rate limit 한계를 외부 분산 제어로 보완
+   - 작업: KV/Redis 또는 API gateway rate limit, 호출 비용 예산, 운영 알림 지표 연결
+   - 종료 조건: 동일 사용자 burst와 다중 인스턴스 환경에서 차단률·비용 예산이 재현 가능하게 검증됨
+
+2. 기간 비교 evidence 계약 복구
+   - 목표: 현재 차단된 range AI를 근거 손실 없이 다시 열 수 있는 데이터 계약 완성
+   - 작업: 기간용 evidence ledger 스키마, line-level citation 규칙, 기간 비교 fixture·HTTP·provider guard 테스트 추가
+   - 종료 조건: `/api/analysis/context`와 `/api/analysis`가 range 모드에서 동일 evidence 계약을 공유하고 `range_ai_requires_orchestration_v2`를 제거할 수 있음
+
+3. 배포 신뢰성 자동화
+   - 목표: 이번 세션에서 수동으로 확인한 frozen/browser/runtime 검증을 CI와 릴리스 절차에 고정
+   - 작업:
+     - [x] `tools/packaged_runtime_smoke.py`로 frozen runtime health/schema/evidence smoke 자동화
+     - [x] `tools/artifact_manifest.py --include-session-artifacts`로 latest candidate·benchmark·runtime audit·matching smoke 묶음 자동화
+     - [x] 최종 빌드 경로/크기/SHA-256를 리포트에 고정하고 manifest 입력 경로를 최종 후보로 전환
+     - [ ] 공개 릴리스에는 Windows 버전 리소스·코드 서명·SBOM·provenance attestation과 일회성 OpenDART live smoke를 추가
+   - 종료 조건: 릴리스 후보마다 소스·frozen 모두에서 동일 QA와 해시 산출물이 자동 생성되고, 최종 보고서가 실제 마지막 빌드 경로를 가리킴
 
 ## 16. 참고 대시보드 반영 진행 기록
+
+2026-09-06 P0 실행 신뢰성 개선:
+
+- [x] 루트 구버전 실행파일을 격리하고 공식 실행 경로를 `dist/DARTStructure.exe`로 단일화
+- [x] 운영체제 수준 중복 포트 바인딩 차단과 기본 포트 점유 시 안전한 대체 포트 선택
+- [x] `/api/health`에 앱 ID·버전·빌드 ID·인스턴스 ID·실제 포트 추가
+- [x] 자기 인스턴스 health 확인 후에만 실제 주소를 브라우저에서 열도록 변경
+- [x] OpenAI 모델 접근 가능 여부와 모델명 오류를 구체적으로 표시
+- [x] 전체 302개 회귀·Ruff·JavaScript 검사와 승격된 Windows 실행파일 live OpenDART smoke 통과
 
 - [x] `Strategy Brief` 탭 추가
 - [x] 선택 기업의 영업이익·영업이익률·인당 영업이익·평균 급여 카드 연결
@@ -402,23 +476,23 @@ agent     agent     agent
 - [x] 영업이익을 세로형 그룹 막대차트, 평균 급여를 SVG 추이선·전망 밴드로 시각화
 - [x] `AI 분석 질문` 입력·실행 UI를 `/api/analysis` 및 Claude MCP provider 상태와 연결
 - [x] 수정된 정적 자산을 포함한 배포용 `dist/DARTStructure.exe` 재빌드 및 임시 포트 실행 검증
-- [x] 최신 실행 파일 경로를 `dist/DARTStructure.exe`로 고정하고 소스 서버와 동일한 정적 자산 포함 확인
+- [x] 최종 실행 파일을 `reports/overnight_sessions/build-final-20260830-221936/dist/DARTStructure.exe`에 격리하고 소스 서버와 동일한 정적 자산 포함 확인(사용자 소유 `dist/DARTStructure.exe` 보존)
 - [x] 실행·시각화·AI 질문·품질 검증 순서를 `DART_WORKFORCE_INTELLIGENCE_RUNBOOK.md`에 문서화
 - [x] 시각화 전용 검증 결과를 `reports/visual_qa_20260821.md`에 기록
 - [x] 차트·AI·다크 테마 정적 자산을 확인하는 `test_frontend_contract.py` 추가
 
-성과 개선 후속 검토:
+성과 개선 구현·후속 검토:
 
-1. DART 호출량을 줄이기 위해 원자료/정규화 결과의 기간·기업 단위 캐시를 검토한다. 개인 임원 원자료는 캐시 대상에서 제외하거나 짧은 보존 정책을 적용한다.
+1. 재무·직원·임원·미등기 보상 원자료는 기업·연도·보고서·endpoint 단위 5분 TTL/LRU 캐시와 동일 키 single-flight를 적용했다. 공개 운영에서는 외부 분산 캐시를 검토한다.
 2. Strategy Brief에서 사용하는 전망식을 선형 연장 하나로 고정하지 않고, 표본 수·결측률·변동성에 따라 신뢰도와 전망 구간을 함께 제시한다.
 3. 기업·연도·보고서 조합을 기준으로 화면 요청을 캐시하고, API 호출 실패 시 마지막 성공 데이터와 최신성 상태를 구분한다.
 4. Pay Equity는 성별 외에도 직급·직무·고용형태 층화가 가능한 공시 필드가 있는지 확인한 후 오해를 줄이는 최소표본 규칙을 추가한다.
-5. Strategy 비동기 요청은 기업·연도·보고서 조합 토큰을 검증해 빠른 재비교나 탭 전환에서 오래된 응답을 폐기한다.
-6. People·임원·추이 API 실패는 `미공시`와 구분해 오류 상태와 메시지를 표시한다.
+5. Strategy·비교·AI 비동기 요청은 기업·연도·보고서·탭·지표 컨텍스트 토큰을 검증하고 오래된 응답을 폐기하며 AI 요청은 즉시 취소한다.
+6. People·임원·추이 API 실패는 `미공시`와 구분해 기업·연도 단위 오류 상태와 메시지를 표시한다.
 7. 음수 영업이익 전망은 0 기준선 양방향 막대로 표시하고, 표본이 부족하거나 음수가 되는 평균 급여 전망은 생성하지 않는다.
-8. 재무·직원·미등기 보상 API 응답은 5분 메모리 캐시로 재사용하고 개인 임원 현황 원자료는 캐시하지 않는다.
+8. 캐시·rate limit·telemetry는 현재 프로세스 단위이므로 공개 serverless 운영 전 분산 제어 계층을 추가한다.
 9. AI 분석은 DART 관측값·원문 링크·결측 상태를 컨텍스트로 전달하고, provider 미연결 시에도 근거 기반 프롬프트를 제공한다. AI 결과는 차트의 실제값·추정값·한계 표시를 대체하지 않는다.
-10. 시각화 품질을 핵심 KPI로 삼아 차트 렌더링(실제값/추정값/전망 구간), 데이터 부족 상태, 모바일 축소 레이아웃을 브라우저 캡처로 회귀 검증한다.
+10. 차트 렌더링, 근거 링크, 데이터 부족, 다크 테마, 390px 모바일, 키보드 탭, 요청 경합을 headless Edge 회귀로 검증한다.
 
 ## 17. AI 해석 계층 운영 방식
 
