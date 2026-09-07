@@ -39,6 +39,7 @@ post-deploy smoke가 root·정적 자산·소스 비공개·합성 데이터 계
   진행 중인 비교와 AI 요청을 취소해 오래된 응답이 새 화면을 덮지 못하게 했습니다.
 - **릴리스 보안:** Windows 실행 파일 preflight·strict smoke, Vercel function-first·default-deny
   업로드 목록, 배포 후 commit SHA·합성 계약·소스 비공개 검사, 비밀·대용량 파일 차단을 CI에 추가했습니다.
+  로컬 전용 PPT 자산이 없는 clean checkout과 Windows·Linux 경로 차이도 구분해 검증합니다.
 - **강의 운영 자료:** 4시간 실습 커리큘럼, 강사용·참가자용 런북, 실제 화면 중심 README와
   16:9 총 60장 강의 덱의 원고·발표자 노트·검증 계약을 정리했습니다.
 

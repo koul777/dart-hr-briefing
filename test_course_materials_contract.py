@@ -27,6 +27,10 @@ WEEK_SEQUENCE_DOCUMENTS = (
 FINAL_OUTLINE = Path("training_deck/final_60/outline.md")
 FINAL_SPEECH = Path("training_deck/final_60/speech.md")
 FINAL_DECK_SPEC = Path("training_deck/final_60/deck_spec.json")
+LOCAL_FINAL_DECK_AVAILABLE = all(
+    (ROOT / path).is_file()
+    for path in (FINAL_OUTLINE, FINAL_SPEECH, FINAL_DECK_SPEC)
+)
 SPEAKER_NOTE_FIELDS = (
     "[권장 시간]",
     "[강사 조작]",
@@ -327,15 +331,14 @@ class CourseCommandContractTests(unittest.TestCase):
 
     def test_shared_classroom_operations_wording_is_unambiguous(self) -> None:
         canonical_preflight = "py -3.12 -X utf8 tools/classroom_preflight.py"
-        for document in (
+        documents = (
             Path("docs/PARTICIPANT_PREFLIGHT.md"),
             Path("docs/INSTRUCTOR_RUNBOOK.md"),
             Path("docs/COURSE_REHEARSAL_CHECKLIST.md"),
             Path("docs/PPT_ALIGNMENT_PLAN.md"),
             Path("OpenDART_HR_Analytics_4시간_커리큘럼.md"),
-            FINAL_OUTLINE,
-            FINAL_SPEECH,
-        ):
+        ) + ((FINAL_OUTLINE, FINAL_SPEECH) if LOCAL_FINAL_DECK_AVAILABLE else ())
+        for document in documents:
             with self.subTest(document=document.as_posix(), contract="preflight"):
                 self.assertIn(canonical_preflight, _normalize_command_text(_read(document)))
 
@@ -344,9 +347,7 @@ class CourseCommandContractTests(unittest.TestCase):
             Path("docs/COURSE_REHEARSAL_CHECKLIST.md"),
             Path("docs/PPT_ALIGNMENT_PLAN.md"),
             Path("OpenDART_HR_Analytics_4시간_커리큘럼.md"),
-            FINAL_OUTLINE,
-            FINAL_SPEECH,
-        )
+        ) + ((FINAL_OUTLINE, FINAL_SPEECH) if LOCAL_FINAL_DECK_AVAILABLE else ())
         for document in threshold_documents:
             text = _read(document)
             with self.subTest(document=document.as_posix(), contract="80-percent"):
@@ -359,9 +360,7 @@ class CourseCommandContractTests(unittest.TestCase):
             Path("docs/COURSE_REHEARSAL_CHECKLIST.md"),
             Path("docs/PPT_ALIGNMENT_PLAN.md"),
             Path("OpenDART_HR_Analytics_4시간_커리큘럼.md"),
-            FINAL_OUTLINE,
-            FINAL_SPEECH,
-        )
+        ) + ((FINAL_OUTLINE, FINAL_SPEECH) if LOCAL_FINAL_DECK_AVAILABLE else ())
         for document in retry_documents:
             with self.subTest(document=document.as_posix(), contract="retry"):
                 text = _read(document)
@@ -406,9 +405,7 @@ class CourseCommandContractTests(unittest.TestCase):
             Path("docs/INSTRUCTOR_RUNBOOK.md"),
             Path("docs/COURSE_REHEARSAL_CHECKLIST.md"),
             Path("docs/PPT_ALIGNMENT_PLAN.md"),
-            FINAL_OUTLINE,
-            FINAL_SPEECH,
-        )
+        ) + ((FINAL_OUTLINE, FINAL_SPEECH) if LOCAL_FINAL_DECK_AVAILABLE else ())
         for document in policy_documents:
             text = _read(document)
             for reason_code in AI_POLICY_REASON_CODES:
@@ -479,6 +476,8 @@ class PptCaptureMatrixContractTests(unittest.TestCase):
                 self.assertGreaterEqual(len(row[4]), 8, "learner evidence is too vague")
 
     def test_each_slide_has_an_existing_asset_and_only_allowlisted_missing_captures(self) -> None:
+        if not LOCAL_FINAL_DECK_AVAILABLE:
+            self.skipTest("training_deck is a local-only presentation artifact")
         observed_missing: set[str] = set()
         for row in self.body_rows + self.appendix_rows:
             assets = BACKTICK_PNG_RE.findall(row[2])
@@ -501,6 +500,8 @@ class PptCaptureMatrixContractTests(unittest.TestCase):
         )
 
     def test_capture_status_markers_match_the_filesystem(self) -> None:
+        if not LOCAL_FINAL_DECK_AVAILABLE:
+            self.skipTest("training_deck is a local-only presentation artifact")
         marked_uncaptured = set(MARKED_UNCAPTURED_PNG_RE.findall(self.plan))
         marked_captured = set(MARKED_CAPTURED_PNG_RE.findall(self.plan))
 
@@ -604,6 +605,10 @@ class PptCaptureMatrixContractTests(unittest.TestCase):
                 self.assertNotIn(Path(asset).name, conclusion)
 
 
+@unittest.skipUnless(
+    LOCAL_FINAL_DECK_AVAILABLE,
+    "training_deck is a local-only presentation artifact",
+)
 class FinalSixtySlideTextContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.outline = _read(FINAL_OUTLINE)

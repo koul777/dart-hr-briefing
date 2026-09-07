@@ -497,7 +497,8 @@ class DeploymentArtifactContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config, _ = _write_bundle_fixture(root)
-            wrong_case_config = Path(str(config).replace("\\.vercel\\", "\\.VERCEL\\"))
+            relative_parts = config.relative_to(root).parts
+            wrong_case_config = root.joinpath(".VERCEL", *relative_parts[1:])
             with self.assertRaisesRegex(
                 VercelBundleContractError,
                 "bundle_config_location_invalid",
