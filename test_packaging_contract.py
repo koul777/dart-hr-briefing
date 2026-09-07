@@ -75,6 +75,13 @@ class PackagingContractTests(unittest.TestCase):
             'uv sync --locked --extra dev --python "${{ matrix.python-version }}"',
             workflow,
         )
+        matrix_run = 'uv run --python "${{ matrix.python-version }}" --locked --extra dev'
+        self.assertEqual(
+            workflow.count(matrix_run),
+            9,
+            "every matrix quality command must pin the selected Python version",
+        )
+        self.assertNotIn("uv run --locked --extra dev", workflow)
         self.assertIn("Verify matrix interpreter was not replaced by .python-version", workflow)
         self.assertIn("sys.version_info[:2]", workflow)
         self.assertIn('uv sync --locked --extra build --python "3.12"', workflow)

@@ -41,24 +41,24 @@ jobs:
         run: uv sync --locked --extra dev --python "${{ matrix.python-version }}"
       - name: Verify matrix interpreter was not replaced by .python-version
         run: >-
-          uv run --locked --extra dev python -c
+          uv run --python "${{ matrix.python-version }}" --locked --extra dev python -c
           "import sys; expected='${{ matrix.python-version }}';
           assert sys.version_info[:2] == tuple(map(int, expected.split('.'))),
           (expected, sys.version)"
       - name: Unit and contract tests
-        run: uv run --locked --extra dev python -m coverage run -m unittest discover -v
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev python -m coverage run -m unittest discover -v
       - name: Coverage summary
-        run: uv run --locked --extra dev python -m coverage report -m --fail-under=80
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev python -m coverage report -m --fail-under=80
       - name: Python lint
-        run: uv run --locked --extra dev ruff check . --select E4,E7,E9,F
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev ruff check . --select E4,E7,E9,F
       - name: Installed dependency vulnerability audit
-        run: uv run --locked --extra dev python -m pip_audit --local
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev python -m pip_audit --local
       - name: Release secret scan
-        run: uv run --locked --extra dev python -X utf8 tools/release_secret_scan.py --root .
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev python -X utf8 tools/release_secret_scan.py --root .
       - name: Repository size and generated-artifact contract
-        run: uv run --locked --extra dev python -X utf8 tools/repository_size_contract.py --root .
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev python -X utf8 tools/repository_size_contract.py --root .
       - name: Python compile check
-        run: uv run --locked --extra dev python -m py_compile analysis_contract.py server.py agent_orchestration.py classroom_mode.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestration_evaluation.py orchestrator.py runtime_controls.py tools/benchmark_orchestration.py tools/artifact_manifest.py tools/classroom_preflight.py tools/post_deploy_smoke.py tools/release_preflight.py tools/release_secret_scan.py tools/repository_size_contract.py tools/vercel_bundle_contract.py
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev python -m py_compile analysis_contract.py server.py agent_orchestration.py classroom_mode.py workforce_analytics.py claude_mcp_adapter.py openai_responses_adapter.py orchestration_evaluation.py orchestrator.py runtime_controls.py tools/benchmark_orchestration.py tools/artifact_manifest.py tools/classroom_preflight.py tools/post_deploy_smoke.py tools/release_preflight.py tools/release_secret_scan.py tools/repository_size_contract.py tools/vercel_bundle_contract.py
       - name: Frontend syntax check
         run: |
           node --check static/app.js
@@ -66,7 +66,7 @@ jobs:
           node --check tools/qa_failure_recovery.js
           node --check tools/qa_orchestration_v2.js
       - name: Deterministic orchestration budget
-        run: uv run --locked --extra dev python tools/benchmark_orchestration.py --iterations 25 --warmups 2 --max-p95-ms 250
+        run: uv run --python "${{ matrix.python-version }}" --locked --extra dev python tools/benchmark_orchestration.py --iterations 25 --warmups 2 --max-p95-ms 250
 
   package-smoke:
     runs-on: windows-latest
