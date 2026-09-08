@@ -15,7 +15,7 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 | 항목 | 현재 상태 |
 | --- | --- |
 | 운영 URL | [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app) |
-| 릴리스 상태 | v0.2.0. 질문 적합성·기업별 근거 귀속 보강은 로컬 검증 완료·운영 반영 전이며, 배포 후 `/api/health`의 `build_id`와 배포 대상 commit SHA를 대조합니다. |
+| 릴리스 상태 | v0.2.0. 질문 적합성·기업별 근거 귀속 및 `HEAD /` 연결 호환성 보강을 2026-09-08 운영에 반영했습니다. `/api/health`의 `build_id`와 배포 대상 commit SHA를 대조해 검증합니다. |
 | 데이터 | OpenDART 재무·직원·임원 공시, 기업 단위 집계 |
 | AI | 사용자가 입력한 OpenAI API Key로 명시적 실행 |
 | 안전장치 | 질문 지표 적합성, 기업·수치·근거 귀속, 개인정보·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
