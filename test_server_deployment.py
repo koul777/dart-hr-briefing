@@ -1347,6 +1347,38 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertIn("script-src 'self'", headers["Content-Security-Policy"])
         self.assertNotIn("unsafe-eval", headers["Content-Security-Policy"])
 
+    def test_head_root_uses_get_route_without_response_body(self):
+        handler = object.__new__(DashboardHandler)
+        handler.path = "/"
+        handler.headers = {"Host": "localhost"}
+        handler.origin_allowed = lambda: True
+        routed = []
+        handler.serve_static = lambda relative, content_type=None: routed.append(
+            (relative, content_type, handler._head_only)
+        )
+
+        handler.do_HEAD()
+
+        self.assertEqual(
+            routed,
+            [("index.html", "text/html; charset=utf-8", True)],
+        )
+        self.assertFalse(handler._head_only)
+
+    def test_head_static_response_sends_headers_without_body(self):
+        handler = object.__new__(DashboardHandler)
+        handler._head_only = True
+        handler.wfile = io.BytesIO()
+        response_headers = []
+        handler.send_response = lambda _status: None
+        handler.send_header = lambda key, value: response_headers.append((key, value))
+        handler.end_headers = lambda: None
+
+        handler.serve_static("index.html")
+
+        self.assertEqual(handler.wfile.getvalue(), b"")
+        self.assertGreater(int(dict(response_headers)["Content-Length"]), 0)
+
     def test_health_discloses_per_process_runtime_control_scope(self):
         handler = object.__new__(DashboardHandler)
         handler.path = "/api/health"

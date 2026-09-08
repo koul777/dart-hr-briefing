@@ -328,7 +328,11 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["privacy"]["status"], "passed")
         self.assertEqual(result["validation"]["status"], "passed")
-        self.assertEqual(result["provider"]["status"], "completed")
+        self.assertEqual(
+            result["provider"]["status"],
+            "completed",
+            result["provider_validation"],
+        )
         self.assertEqual(result["benchmarks"]["rankings"]["employees_total"][0]["company"]["corp_code"], "002")
         self.assertNotIn("개인 이름은 결과에 없어야 함", str(result))
         trace_names = {item["agent"] for item in result["trace"]}
@@ -1061,6 +1065,311 @@ class AgentOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(result["provider"]["status"], "completed")
         self.assertEqual(result["provider_validation"]["status"], "passed")
+
+    def test_metric_question_requires_a_direct_grounded_answer(self):
+        question = "두 기업 중 직원 1인당 매출이 더 높은 곳은 어디인가?"
+
+        def direct_answer(context):
+            evidence = [
+                item for item in context["evidence"]
+                if item["metric_id"] == "revenue_per_employee"
+            ]
+            high = max(evidence, key=lambda item: item["value"])
+            low = min(evidence, key=lambda item: item["value"])
+            return (
+                f"{high['company']['corp_name']}의 직원 1인당 매출은 "
+                f"{high['value']:g}원 [{high['evidence_id']}]이며 "
+                f"{low['company']['corp_name']}의 {low['value']:g}원 "
+                f"[{low['evidence_id']}]보다 높습니다."
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(direct_answer)
+        ).run(
+            [
+                observation("001", "A사", 100, 1, 10_000),
+                observation("002", "B사", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": question,
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(result["provider"]["status"], "completed")
+        self.assertEqual(result["provider_validation"]["status"], "passed")
+        self.assertEqual(
+            result["provider_validation"]["required_question_metric_ids"],
+            ["revenue_per_employee"],
+        )
+
+    def test_question_answer_gets_one_grounding_correction_retry(self):
+        provider = None
+
+        def answers(context):
+            if provider.calls == 1:
+                return "Employee count is high."
+            employees = next(
+                item for item in context["evidence"]
+                if item["metric_id"] == "employees_total"
+            )
+            return (
+                f"Employee count is {employees['value']:g}명"
+                f"[{employees['evidence_id']}]."
+            )
+
+        provider = CountingProvider(answers)
+        result = WorkforceAgentOrchestrator(provider=provider).run(
+            [observation("001", "A Corp", 100, 1, 10_000)],
+            request_context={
+                "question": "What is the employee count?",
+                "metric_ids": ["employees_total"],
+            },
+        )
+
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(
+            result["provider"]["status"],
+            "completed",
+            result["provider_validation"],
+        )
+        self.assertEqual(result["provider"]["validation_retry_count"], 1)
+
+    def test_uncited_lead_comparison_is_accepted_when_cited_values_prove_it(self):
+        def answer_with_lead_summary(context):
+            evidence = sorted(
+                (
+                    item for item in context["evidence"]
+                    if item["metric_id"] == "revenue_per_employee"
+                ),
+                key=lambda item: item["value"],
+                reverse=True,
+            )
+            high, low = evidence
+            return (
+                f"{high['company']['corp_name']} has higher revenue per employee. "
+                f"{high['company']['corp_name']} revenue per employee is "
+                f"{high['value']:g}원[{high['evidence_id']}]. "
+                f"{low['company']['corp_name']} revenue per employee is "
+                f"{low['value']:g}원[{low['evidence_id']}]."
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(answer_with_lead_summary)
+        ).run(
+            [
+                observation("001", "A Corp", 100, 1, 10_000),
+                observation("002", "B Corp", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": "Which company has higher revenue per employee?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(
+            result["provider"]["status"],
+            "completed",
+            result["provider_validation"],
+        )
+        self.assertEqual(result["provider_validation"]["status"], "passed")
+
+    def test_uncited_lead_comparison_is_rejected_when_cited_values_disprove_it(self):
+        def answer_with_wrong_summary(context):
+            evidence = sorted(
+                (
+                    item for item in context["evidence"]
+                    if item["metric_id"] == "revenue_per_employee"
+                ),
+                key=lambda item: item["value"],
+                reverse=True,
+            )
+            high, low = evidence
+            return (
+                f"{low['company']['corp_name']} has higher revenue per employee. "
+                f"{high['company']['corp_name']} revenue per employee is "
+                f"{high['value']:g}원[{high['evidence_id']}]. "
+                f"{low['company']['corp_name']} revenue per employee is "
+                f"{low['value']:g}원[{low['evidence_id']}]."
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(answer_with_wrong_summary)
+        ).run(
+            [
+                observation("001", "A Corp", 100, 1, 10_000),
+                observation("002", "B Corp", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": "Which company has higher revenue per employee?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(result["provider"]["status"], "rejected")
+        self.assertIn(
+            "uncited_factual_claim",
+            result["provider_validation"]["violation_codes"],
+        )
+
+    def test_metric_heading_can_scope_grounded_company_rows(self):
+        def headed_answer(context):
+            evidence = [
+                item for item in context["evidence"]
+                if item["metric_id"] == "revenue_per_employee"
+            ]
+            high = max(evidence, key=lambda item: item["value"])
+            low = min(evidence, key=lambda item: item["value"])
+            return (
+                "직원 1인당 매출 비교\n"
+                f"- {high['company']['corp_name']}: {high['value']:g}원 "
+                f"[{high['evidence_id']}]\n"
+                f"- {low['company']['corp_name']}: {low['value']:g}원 "
+                f"[{low['evidence_id']}]"
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(headed_answer)
+        ).run(
+            [
+                observation("001", "A사", 100, 1, 10_000),
+                observation("002", "B사", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": "두 기업 중 직원 1인당 매출이 더 높은 곳은 어디인가?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(
+            result["provider"]["status"],
+            "completed",
+            result["provider_validation"],
+        )
+        self.assertEqual(result["provider_validation"]["status"], "passed")
+
+    def test_provider_rejects_swapped_company_evidence_attribution(self):
+        def swapped_answer(context):
+            evidence = [
+                item for item in context["evidence"]
+                if item["metric_id"] == "revenue_per_employee"
+            ]
+            high = max(evidence, key=lambda item: item["value"])
+            low = min(evidence, key=lambda item: item["value"])
+            return (
+                f"{low['company']['corp_name']}의 직원 1인당 매출은 "
+                f"{high['value']:g}원 [{high['evidence_id']}]이며 "
+                f"{high['company']['corp_name']}의 {low['value']:g}원 "
+                f"[{low['evidence_id']}]보다 높습니다."
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(swapped_answer)
+        ).run(
+            [
+                observation("001", "A사", 100, 1, 10_000),
+                observation("002", "B사", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": "두 기업 중 직원 1인당 매출이 더 높은 곳은 어디인가?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(result["provider"]["status"], "rejected")
+        self.assertIn(
+            "evidence_company_mismatch",
+            result["provider_validation"]["violation_codes"],
+        )
+        self.assertEqual(
+            len(result["provider_validation"]["evidence_company_mismatches"]),
+            2,
+        )
+
+    def test_provider_rejects_grounded_but_irrelevant_metric_answer(self):
+        def irrelevant_answer(context):
+            employees = next(
+                item for item in context["evidence"]
+                if item["metric_id"] == "employees_total"
+            )
+            return (
+                f"{employees['company']['corp_name']}의 직원 수는 "
+                f"{employees['value']:g}명 [{employees['evidence_id']}]입니다."
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(irrelevant_answer)
+        ).run(
+            [
+                observation("001", "A사", 100, 1, 10_000),
+                observation("002", "B사", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": "두 기업 중 직원 1인당 매출이 더 높은 곳은 어디인가?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(result["provider"]["status"], "rejected")
+        self.assertIn(
+            "question_metric_not_addressed",
+            result["provider_validation"]["violation_codes"],
+        )
+
+    def test_provider_rejects_detached_question_metric_citation(self):
+        def detached_citation_answer(context):
+            employees = next(
+                item for item in context["evidence"]
+                if item["metric_id"] == "employees_total"
+            )
+            revenue_per_employee = next(
+                item for item in context["evidence"]
+                if item["metric_id"] == "revenue_per_employee"
+            )
+            return (
+                f"직원 수는 {employees['value']:g}명 "
+                f"[{employees['evidence_id']}]입니다.\n"
+                f"[{revenue_per_employee['evidence_id']}]"
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(detached_citation_answer)
+        ).run(
+            [
+                observation("001", "A사", 100, 1, 10_000),
+                observation("002", "B사", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": "두 기업 중 직원 1인당 매출이 더 높은 곳은 어디인가?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(result["provider"]["status"], "rejected")
+        self.assertIn(
+            "question_metric_not_addressed",
+            result["provider_validation"]["violation_codes"],
+        )
+
+    def test_provider_rejects_vague_non_answer_to_metric_question(self):
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider("제공된 자료를 추가로 확인해야 합니다.")
+        ).run(
+            [
+                observation("001", "A사", 100, 1, 10_000),
+                observation("002", "B사", 200, 1, 30_000),
+            ],
+            request_context={
+                "question": "두 기업 중 직원 1인당 매출이 더 높은 곳은 어디인가?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(result["provider"]["status"], "rejected")
+        self.assertIn(
+            "question_metric_not_addressed",
+            result["provider_validation"]["violation_codes"],
+        )
 
     def test_provider_numeric_claim_without_any_citation_is_removed(self):
         result = WorkforceAgentOrchestrator(
@@ -1838,6 +2147,62 @@ class AgentOrchestrationTests(unittest.TestCase):
             "sensitive_key",
             result["provider_validation"]["violation_codes"],
         )
+
+    def test_public_calculation_label_is_not_misclassified_as_a_secret(self):
+        def grounded_salary(context):
+            evidence = next(
+                row for row in context["evidence"]
+                if row["metric_id"] == "average_salary"
+            )
+            return (
+                f"평균 급여는 {evidence['value']:g}원[{evidence['evidence_id']}]이며 "
+                "disclosed_average_headcount_weighted 기준입니다."
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(result=grounded_salary)
+        ).run([observation("001", "A사", 100, 1, 10000)])
+
+        self.assertEqual(
+            result["provider"]["status"],
+            "completed",
+            result["provider_validation"],
+        )
+
+    def test_compound_korean_money_and_global_report_year_are_grounded(self):
+        def grounded_comparison(context):
+            evidence = {
+                row["company"]["corp_name"]: row
+                for row in context["evidence"]
+                if row["metric_id"] == "revenue_per_employee"
+            }
+            high = evidence["테스트전자"]
+            low = evidence["테스트플랫폼"]
+            return (
+                f"직원 1인당 매출은 테스트전자가 28억 원[{high['evidence_id']}]으로 "
+                f"테스트플랫폼 21억 4,285만 원[{low['evidence_id']}]보다 높습니다. "
+                "두 값 모두 2024년 사업보고서(11011) 기준입니다."
+            )
+
+        result = WorkforceAgentOrchestrator(
+            provider=CountingProvider(result=grounded_comparison)
+        ).run(
+            [
+                observation("001", "테스트전자", 100, 1, 280_000_000_000),
+                observation("002", "테스트플랫폼", 200, 1, 428_571_428_600),
+            ],
+            request_context={
+                "question": "직원 1인당 매출이 더 높은 기업은 어디인가요?",
+                "metric_ids": ["revenue_per_employee"],
+            },
+        )
+
+        self.assertEqual(
+            result["provider"]["status"],
+            "completed",
+            result["provider_validation"],
+        )
+        self.assertEqual(result["provider_validation"]["status"], "passed")
 
     def test_provider_numeric_guard_supports_common_korean_salary_units(self):
         item = observation("001", "A사", 100, 1, 10000)

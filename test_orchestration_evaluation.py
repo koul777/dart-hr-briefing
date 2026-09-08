@@ -119,6 +119,78 @@ class OrchestrationEvaluationTests(unittest.TestCase):
         self.assertEqual(result["provider_validation"]["status"], "passed")
         self.assertEqual(evaluation["status"], "passed")
 
+    def test_scorecard_rechecks_question_metric_relevance(self) -> None:
+        class Provider:
+            configured = True
+
+            def analyze(self, *, prompt, context):
+                evidence = next(
+                    item for item in context["evidence"]
+                    if item["metric_id"] == "employees_total"
+                )
+                return f"직원 수는 100명 [{evidence['evidence_id']}]입니다."
+
+        result = WorkforceAgentOrchestrator(provider=Provider()).run(
+            [evaluation_observation()]
+        )
+        result["request"]["question"] = "평균 급여는 얼마인가?"
+
+        evaluation = evaluate_orchestration_result(result)
+
+        self.assertEqual(evaluation["status"], "failed")
+        self.assertIn(
+            "provider_question_metric_not_addressed",
+            evaluation["failures"],
+        )
+
+    def test_scorecard_rechecks_company_evidence_attribution(self) -> None:
+        class Provider:
+            configured = True
+
+            def analyze(self, *, prompt, context):
+                evidence = [
+                    item for item in context["evidence"]
+                    if item["metric_id"] == "revenue"
+                ]
+                first, second = evidence
+                return (
+                    f"{first['company']['corp_name']} 매출은 {first['value']:g}원 "
+                    f"[{first['evidence_id']}]입니다. "
+                    f"{second['company']['corp_name']} 매출은 {second['value']:g}원 "
+                    f"[{second['evidence_id']}]입니다."
+                )
+
+        first = evaluation_observation()
+        second = copy.deepcopy(first)
+        second["company"] = {"corp_code": "002", "corp_name": "B사"}
+        second["financials"] = {
+            "revenue": 20_000_000_000,
+            "operating_profit": 2_000_000_000,
+        }
+        second["source_urls"] = [
+            "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000002"
+        ]
+        for component in (
+            "employee_rows",
+            "executive_rows",
+            "unregistered_pay_rows",
+        ):
+            for row in second[component]:
+                row["rcept_no"] = "20250000000002"
+        result = WorkforceAgentOrchestrator(provider=Provider()).run([first, second])
+        original = result["provider"]["result"]
+        swapped = original.replace("A사", "__A__").replace("B사", "A사").replace("__A__", "B사")
+        result["provider"]["result"] = swapped
+        result["provider_result"] = swapped
+
+        evaluation = evaluate_orchestration_result(result)
+
+        self.assertEqual(evaluation["status"], "failed")
+        self.assertIn(
+            "provider_evidence_company_mismatch",
+            evaluation["failures"],
+        )
+
     def test_scorecard_returns_failures_for_malformed_shapes(self) -> None:
         malformed_results = (
             None,

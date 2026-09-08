@@ -1477,6 +1477,34 @@ def _contains_credential_literal(value: Any) -> bool:
     return False
 
 
+SAFE_PUBLIC_PROVIDER_LITERALS = (
+    "disclosed_average_headcount_weighted",
+    "annual_salary_total_per_employee_fallback",
+    "not_available",
+)
+
+
+def _without_safe_public_provider_literals(value: Any) -> Any:
+    """Mask fixed, non-secret calculation labels only for privacy scanning."""
+
+    if isinstance(value, str):
+        pattern = r"(?<![A-Za-z0-9_])(?:" + "|".join(
+            re.escape(item) for item in SAFE_PUBLIC_PROVIDER_LITERALS
+        ) + r")(?![A-Za-z0-9_])"
+        return re.sub(pattern, "PUBLIC_CALCULATION_LABEL", value)
+    if isinstance(value, Mapping):
+        return {
+            key: _without_safe_public_provider_literals(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _without_safe_public_provider_literals(child)
+            for child in value
+        ]
+    return value
+
+
 EXPLICIT_CREDENTIAL_PATTERN = re.compile(
     r"(?i)(?:\bsk-[A-Za-z0-9_-]{4,}|\b(?:bearer|basic)\s+"
     r"[A-Za-z0-9._~+/=-]{4,}|"
@@ -2366,7 +2394,11 @@ def _build_strategy_context(state: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": ORCHESTRATION_SCHEMA_VERSION,
         "records": [
             {
-                **record,
+                **{
+                    key: value
+                    for key, value in record.items()
+                    if key != "metric_basis"
+                },
                 "metrics": {
                     metric: value
                     for metric, value in record["metrics"].items()
@@ -2428,6 +2460,16 @@ def _build_strategy_prompt(context: Mapping[str, Any]) -> str:
         "상회·하회를 우열이나 원인으로 해석하지 마세요.\n\n"
         "공시 수치를 언급할 때는 반드시 evidence_id를 [EV-...] 형식으로 함께 인용하세요.\n"
         "evidence 목록에 없는 숫자를 확인된 사실처럼 제시하지 마세요.\n\n"
+        "사용자 질문에 먼저 직접 답하고, 질문이 특정 지표를 묻는 경우 그 지표의 근거를 반드시 인용하세요.\n"
+        "기업별 수치는 해당 기업명과 수치 바로 뒤에 그 기업의 evidence_id 하나를 붙이세요. "
+        "서로 다른 기업의 근거를 문장 끝에 묶어서 인용하지 마세요.\n\n"
+        "답변은 질문에 필요한 내용만 3~6개 문장으로 간결하게 작성하세요. 같은 수치를 원과 억 원처럼 "
+        "두 단위로 중복 표기하지 말고 한 번만 표기하세요. 확인된 사실이 있는 각 문장에는 해당 "
+        "evidence_id를 붙이세요. 질문에서 요구하지 않은 추가 지표, 내부 필드명, 원시 상태 코드, "
+        "observation ID는 출력하지 마세요. 기준연도와 보고서 코드는 질문 답변에 꼭 필요할 때만 "
+        "근거와 함께 언급하세요. 첫 결론 문장에도 결론을 뒷받침하는 기업별 evidence_id를 바로 붙이고, "
+        "evidence에 별도 값이 없는 차이·증감률·비율은 새로 계산해 숫자로 제시하지 마세요. 데이터 품질이나 "
+        "누락은 질문의 직접 답변에 필요할 때만 언급하세요.\n\n"
         f"{question_block}"
         "[WORKFORCE_CONTEXT]\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2, allow_nan=False)}\n"
@@ -2451,11 +2493,13 @@ GENERIC_PERSON_LIKE_TERMS = {
     "외부",
     "내부",
     "등기",
+    "관측치",
     "상근",
     "사외",
     "사내",
     "대표",
     "미등기",
+    "비등기",
     "회사",
     "기업",
     "현직",
@@ -2472,6 +2516,8 @@ GENERIC_PERSON_LIKE_TERMS = {
     "count is",
     "count was",
     "counts are",
+    "설명하지",
+    "인과관계",
 }
 KOREAN_PERSON_REFERENCE_PARTICLES = (
     "으로",
@@ -2498,6 +2544,14 @@ def _numeric_claims(text: str) -> list[tuple[float, str, float]]:
     without_evidence_ids = re.sub(
         r"EV-[A-Za-z0-9_-]{4,64}", "", text, flags=re.IGNORECASE
     )
+    compound_money_pattern = re.compile(
+        r"(?<!\d)(\d[\d,]*)\s*억\s*(\d[\d,]*)\s*만\s*원"
+    )
+    for match in compound_money_pattern.finditer(without_evidence_ids):
+        major = float(match.group(1).replace(",", ""))
+        minor = float(match.group(2).replace(",", ""))
+        claims.append((major * 100_000_000 + minor * 10_000, "원", 10_000.0))
+    without_evidence_ids = compound_money_pattern.sub("", without_evidence_ids)
     for raw_value, raw_unit in NUMERIC_CLAIM_PATTERN.findall(without_evidence_ids):
         try:
             normalized_value = raw_value.replace(",", "")
@@ -2576,6 +2630,25 @@ def _evidence_matches_numeric_claim(
     )
 
 
+def _is_grounded_report_year_claim(
+    text: str,
+    claim: float,
+    unit: str,
+    cited_evidence: Sequence[Mapping[str, Any]],
+) -> bool:
+    return bool(
+        unit == "년"
+        and claim.is_integer()
+        and 2000 <= claim <= 2099
+        and re.search(
+            r"(?:사업보고서|반기보고서|분기보고서|공시|사업연도|report)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        and any(str(int(claim)) == str(item.get("year") or "") for item in cited_evidence)
+    )
+
+
 def _possible_fabricated_person_reference(
     text: str,
     observations: Sequence[WorkforceObservation | Mapping[str, Any]],
@@ -2617,7 +2690,7 @@ CAUSAL_MARKER_PATTERN = re.compile(
     r"영향으로|원인(?:이다|입니다|으로)|"
     r"기인(?:했다|합니다|한)|초래(?:했다|합니다|한)|유발(?:했다|합니다|한)|"
     r"야기(?:했다|합니다|한)|견인(?:했다|합니다|한)|저해(?:했다|합니다|한)|"
-    r"촉진(?:했다|합니다|한)|영향을\s*미쳤|결과(?:이다|입니다|로)|"
+    r"촉진(?:했다|합니다|한)|영향을\s*미쳤|결과(?:이다|입니다|로(?!\s*해석))|"
     r"because|caused\s+by|caused|driven\s+by|led\s+to|resulted\s+in|due\s+to|"
     r"attribut(?:able|ed)\s+to|therefore|thus)",
     flags=re.IGNORECASE,
@@ -2628,12 +2701,15 @@ CAUSAL_HEDGE_TERMS = (
     "추정",
     "추측",
     "확인할 수 없",
+    "해석할 수 없",
     "확인되지 않",
     "단정할 수 없",
     "단정하지 않",
     "판단할 수 없",
     "추론하지 않",
     "근거가 없",
+    "근거는 없",
+    "근거로 볼 수 없",
     "추가 검증",
     "검증이 필요",
     "일 수 있",
@@ -2787,8 +2863,9 @@ FACTUAL_PREDICATE_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 FACTUAL_HEDGE_PATTERN = re.compile(
-    r"(?:가설|가능성|추정|추측|예시|확인할 수 없|확인되지 않|단정할 수 없|"
-    r"판단할 수 없|추론하지 않|근거가 없|추가 검증|검증이 필요|일 수 있|"
+    r"(?:가설|가능성|추정|추측|예시|확인할 수 없|해석할 수 없|확인되지 않|단정할 수 없|"
+    r"판단할 수 없|추론하지 않|근거가 없|근거가 아니|관측일 뿐|참고용|"
+    r"설명하지|제약이 있|해석해서는 안|추가 검증|검증이 필요|한정|일 수 있|"
     r"일 수도 있|may\b|might\b|could\b|hypothesis|cannot confirm|"
     r"not confirmed|no causal|requires validation|possible)",
     flags=re.IGNORECASE,
@@ -2867,7 +2944,10 @@ CLAIM_CLAUSE_BOUNDARY_PATTERN = re.compile(
 def _claim_sentences(text: str) -> list[str]:
     return [
         segment.strip()
-        for segment in re.split(r"[\n\r.!?。]+", text)
+        for segment in re.split(
+            r"(?:[\n\r]+|(?<!\d)\.(?!\d)|[!?。]+)",
+            text,
+        )
         if segment.strip()
     ]
 
@@ -3679,6 +3759,31 @@ def _uncited_factual_claims(
         without_list_marker = re.sub(
             r"^\s*(?:\d+|[A-Za-z])[.)]\s+", "", without_ids
         )
+        without_list_marker = re.sub(
+            r"(?i)(?:직원\s*)?1\s*인당|per\s+employee",
+            "인당",
+            without_list_marker,
+        )
+        without_list_marker = re.sub(
+            r"(?<!\d)20\d{2}\s*년\s*\(\s*보고서\s*코드\s*\d{5}\s*\)",
+            "기준연도",
+            without_list_marker,
+        )
+        without_list_marker = re.sub(
+            r"(?<!\d)20\d{2}\s*년(?=\s*(?:기준|사업연도|공시|사업보고서|반기보고서|분기보고서))",
+            "기준연도",
+            without_list_marker,
+        )
+        without_list_marker = re.sub(
+            r"(사업보고서|반기보고서|분기보고서)\s*\(\s*\d{5}\s*\)",
+            r"\1",
+            without_list_marker,
+        )
+        without_list_marker = re.sub(
+            r"(?<![가-힣])이\s+(?=(?:비교|차이|결과|수치|값|데이터|분석|지표|관측))",
+            "해당 ",
+            without_list_marker,
+        )
         has_subject = FACTUAL_SUBJECT_PATTERN.search(without_list_marker)
         if not has_subject:
             continue
@@ -3760,6 +3865,248 @@ def _claim_text_segments(value: Any) -> list[str]:
             segments.append(" ".join(aggregate_parts))
         return segments
     return []
+
+
+QUESTION_METRIC_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("직원 1인당 매출", "인당 매출", "매출/인", "revenue per employee"), ("revenue_per_employee",)),
+    (("직원 1인당 영업이익", "인당 영업이익", "operating profit per employee"), ("operating_profit_per_employee",)),
+    (("인당 생산성", "인력 생산성", "workforce productivity"), ("revenue_per_employee", "operating_profit_per_employee")),
+    (("평균 급여", "평균급여", "평균 보상", "average salary", "average pay"), ("average_salary",)),
+    (("급여 대비 매출", "급여/매출", "보상 지속가능성", "salary to revenue"), ("salary_to_revenue",)),
+    (("직원 수", "총 직원", "인력 규모", "headcount", "employee count"), ("employees_total",)),
+    (("정규직 비중", "regular share"), ("regular_share",)),
+    (("계약직 비중", "contract share"), ("contract_share",)),
+    (("평균 근속", "근속기간", "average tenure"), ("average_tenure_years",)),
+    (("임원 수", "executive count"), ("executives_total",)),
+    (("사외이사 비중", "outside director share"), ("outside_director_share",)),
+    (("여성 임원 비중", "female executive share"), ("female_share",)),
+    (("영업이익률", "operating margin"), ("operating_margin",)),
+    (("유동비율", "current ratio"), ("current_ratio",)),
+    (("부채비율", "debt ratio"), ("debt_ratio",)),
+    (("영업이익", "operating profit"), ("operating_profit",)),
+    (("순이익", "net income"), ("net_income",)),
+    (("매출", "revenue", "sales"), ("revenue",)),
+    (("자산", "assets"), ("assets",)),
+    (("부채", "liabilities"), ("liabilities",)),
+    (("자본", "equity"), ("equity",)),
+    (("현금", "cash"), ("cash",)),
+)
+
+
+def _latest_user_question(value: Any) -> str:
+    question = str(value or "").strip()
+    for marker in ("[새 질문]", "[NEW QUESTION]"):
+        if marker.casefold() in question.casefold():
+            question = re.split(re.escape(marker), question, flags=re.IGNORECASE)[-1].strip()
+    return question
+
+
+def _question_required_metric_groups(
+    question: Any,
+    requested_metric_ids: Sequence[Any] = (),
+) -> list[tuple[str, ...]]:
+    """Infer only explicit metric requirements from the latest user question."""
+
+    latest = _latest_user_question(question).casefold()
+    if not latest:
+        return []
+    groups: list[tuple[str, ...]] = []
+    for hints, metric_ids in QUESTION_METRIC_HINTS:
+        if any(hint.casefold() in latest for hint in hints):
+            group = tuple(dict.fromkeys(metric_ids))
+            if group not in groups:
+                groups.append(group)
+    flattened = {metric_id for group in groups for metric_id in group}
+    if "revenue_per_employee" in flattened:
+        groups = [group for group in groups if group != ("revenue",)]
+    if "operating_profit_per_employee" in flattened:
+        groups = [group for group in groups if group != ("operating_profit",)]
+    if not groups:
+        requested = [
+            str(metric_id)
+            for metric_id in requested_metric_ids
+            if str(metric_id) in ALLOWED_REQUEST_METRICS
+        ]
+        if len(requested) == 1:
+            groups.append((requested[0],))
+    return groups
+
+
+def _question_required_metric_ids(
+    question: Any,
+    requested_metric_ids: Sequence[Any] = (),
+) -> list[str]:
+    return list(dict.fromkeys(
+        metric_id
+        for group in _question_required_metric_groups(question, requested_metric_ids)
+        for metric_id in group
+    ))
+
+
+def _metric_answer_hints(metric_id: str) -> tuple[str, ...]:
+    hints = [metric_id, metric_id.replace("_", " ")]
+    for question_hints, metric_ids in QUESTION_METRIC_HINTS:
+        if metric_id in metric_ids:
+            hints.extend(question_hints)
+    return tuple(dict.fromkeys(hint.casefold() for hint in hints if hint))
+
+
+def _addressed_question_metric_ids(
+    value: Any,
+    evidence_by_id: Mapping[str, Mapping[str, Any]],
+    required_metric_ids: Sequence[str],
+) -> set[str]:
+    """Require requested-metric evidence under an explicit answer context."""
+
+    required = set(required_metric_ids)
+    addressed: set[str] = set()
+    active_metrics: set[str] = set()
+    for segment in _claim_text_segments(value):
+        lowered = segment.casefold()
+        mentioned_metrics = {
+            metric_id
+            for metric_id in required
+            if any(hint in lowered for hint in _metric_answer_hints(metric_id))
+        }
+        if mentioned_metrics:
+            active_metrics = mentioned_metrics
+        cited_metrics = {
+            str(evidence_by_id[citation.casefold()].get("metric_id") or "")
+            for citation in re.findall(
+                r"EV-[0-9a-f]{12}", segment, flags=re.IGNORECASE
+            )
+            if citation.casefold() in evidence_by_id
+        }
+        for metric_id in required.intersection(cited_metrics):
+            if metric_id in active_metrics:
+                addressed.add(metric_id)
+    return addressed
+
+
+def _direct_comparison_summary_supported(
+    value: Any,
+    evidence_by_id: Mapping[str, Mapping[str, Any]],
+    required_metric_ids: Sequence[str],
+) -> bool:
+    """Accept an uncited lead conclusion only when cited values prove it exactly."""
+
+    if not isinstance(value, str) or len(required_metric_ids) != 1:
+        return False
+    sentences = _claim_sentences(re.sub(r"\s+", " ", value).strip())
+    if len(sentences) < 2:
+        return False
+    summary = sentences[0]
+    metric_id = required_metric_ids[0]
+    if (
+        re.search(r"EV-[0-9a-f]{12}", summary, flags=re.IGNORECASE)
+        or _numeric_claims(summary)
+        or not any(hint in summary.casefold() for hint in _metric_answer_hints(metric_id))
+    ):
+        return False
+
+    higher = bool(re.search(r"더\s*(?:높|많|크)|가장\s*(?:높|많|크)|higher|highest|larger|largest", summary, re.IGNORECASE))
+    lower = bool(re.search(r"더\s*(?:낮|적|작)|가장\s*(?:낮|적|작)|lower|lowest|smaller|smallest", summary, re.IGNORECASE))
+    if higher == lower:
+        return False
+
+    cited_ids = {
+        citation.casefold()
+        for citation in re.findall(
+            r"EV-[0-9a-f]{12}",
+            " ".join(sentences[1:]),
+            flags=re.IGNORECASE,
+        )
+        if citation.casefold() in evidence_by_id
+    }
+    cited_metric_evidence = [
+        evidence_by_id[evidence_id]
+        for evidence_id in cited_ids
+        if str(evidence_by_id[evidence_id].get("metric_id") or "") == metric_id
+    ]
+    values_by_company: dict[str, float] = {}
+    for evidence in cited_metric_evidence:
+        company_name = _evidence_company_name(evidence)
+        numeric_value = _finite_number(evidence.get("value"))
+        if company_name and numeric_value is not None:
+            values_by_company[company_name] = float(numeric_value)
+    mentioned = [name for name in values_by_company if name in summary]
+    if len(mentioned) != 1 or len(values_by_company) < 2:
+        return False
+
+    target_value = values_by_company[mentioned[0]]
+    peer_values = [
+        numeric_value
+        for company_name, numeric_value in values_by_company.items()
+        if company_name != mentioned[0]
+    ]
+    return (
+        higher and all(target_value > peer_value for peer_value in peer_values)
+    ) or (
+        lower and all(target_value < peer_value for peer_value in peer_values)
+    )
+
+
+def _evidence_company_name(evidence: Mapping[str, Any]) -> str:
+    company = evidence.get("company")
+    if not isinstance(company, Mapping):
+        return ""
+    return str(company.get("corp_name") or "").strip()
+
+
+def _citation_company_mismatches(
+    value: Any,
+    evidence_by_id: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    """Bind each inline evidence citation to the nearest stated company."""
+
+    company_names = sorted(
+        {
+            _evidence_company_name(item)
+            for item in evidence_by_id.values()
+            if _evidence_company_name(item)
+        },
+        key=len,
+        reverse=True,
+    )
+    if len(company_names) < 2:
+        return []
+    mismatches: list[dict[str, str]] = []
+    emitted: set[tuple[str, str]] = set()
+    for segment in _claim_text_segments(value):
+        for sentence in _claim_sentences(segment) or [segment]:
+            active_company = ""
+            cursor = 0
+            for citation in re.finditer(
+                r"EV-[0-9a-f]{12}", sentence, flags=re.IGNORECASE
+            ):
+                prefix = sentence[cursor:citation.start()].casefold()
+                mentions = [
+                    (prefix.rfind(company_name.casefold()), company_name)
+                    for company_name in company_names
+                    if company_name.casefold() in prefix
+                ]
+                if mentions:
+                    active_company = max(mentions, key=lambda item: item[0])[1]
+                evidence_id = citation.group(0).casefold()
+                evidence = evidence_by_id.get(evidence_id)
+                expected_company = (
+                    _evidence_company_name(evidence) if evidence is not None else ""
+                )
+                if (
+                    active_company
+                    and expected_company
+                    and active_company.casefold() != expected_company.casefold()
+                ):
+                    key = (evidence_id, active_company.casefold())
+                    if key not in emitted:
+                        emitted.add(key)
+                        mismatches.append({
+                            "evidence_id": citation.group(0),
+                            "claimed_company": active_company,
+                            "evidence_company": expected_company,
+                        })
+                cursor = citation.end()
+    return mismatches
 
 
 class StrategyInterpreterAgent:
@@ -3874,6 +4221,9 @@ class ProviderOutputGuardAgent:
     name = "provider_output_guard"
     depends_on = ("strategy_interpreter", "evidence_ledger", "privacy_guard", "provider_policy")
 
+    def __init__(self, provider: StrategyProvider | None = None) -> None:
+        self.strategy_provider = provider
+
     def run(self, observations, state):
         provider = dict(state["provider"])
         if provider.get("status") != "completed" or provider.get("result") is None:
@@ -3949,11 +4299,15 @@ class ProviderOutputGuardAgent:
                 },
             }
         lowered = result_text.casefold()
+        security_scan_result = _without_safe_public_provider_literals(result)
         violations = []
-        if _contains_sensitive_key(result) or _contains_credential_literal(result):
+        if (
+            _contains_sensitive_key(result)
+            or _contains_credential_literal(security_scan_result)
+        ):
             violations.append("sensitive_key")
         if (
-            _contains_direct_identifier_literal(result)
+            _contains_direct_identifier_literal(security_scan_result)
             or any(literal in lowered for literal in _sensitive_literals(observations))
             or (
                 PERSON_REFERENCE_CONTEXT_PATTERN.search(result_text)
@@ -4001,12 +4355,65 @@ class ProviderOutputGuardAgent:
         if unknown_ids:
             violations.append("unknown_evidence_citation")
 
+        evidence_company_mismatches = _citation_company_mismatches(
+            result,
+            evidence_by_id,
+        )
+        if evidence_company_mismatches:
+            violations.append("evidence_company_mismatch")
+
+        request_context = state.get("request_context") or {}
+        required_metric_groups = _question_required_metric_groups(
+            request_context.get("question"),
+            request_context.get("metric_ids") or (),
+        )
+        available_metric_ids = {
+            str(item.get("metric_id") or "") for item in evidence_by_id.values()
+        }
+        required_metric_ids = _question_required_metric_ids(
+            request_context.get("question"),
+            request_context.get("metric_ids") or (),
+        )
+        addressed_metric_ids = _addressed_question_metric_ids(
+            result,
+            evidence_by_id,
+            required_metric_ids,
+        )
+        required_available_groups = [
+            tuple(metric_id for metric_id in group if metric_id in available_metric_ids)
+            for group in required_metric_groups
+        ]
+        required_available_groups = [
+            group for group in required_available_groups if group
+        ]
+        unaddressed_metric_groups = [
+            list(group)
+            for group in required_available_groups
+            if not addressed_metric_ids.intersection(group)
+        ]
+        if unaddressed_metric_groups:
+            violations.append("question_metric_not_addressed")
+
         unsupported_factual_claims = _uncited_factual_claims(result, known_ids)
+        if (
+            unsupported_factual_claims == [{"segment_index": 1, "claim_type": "factual"}]
+            and _direct_comparison_summary_supported(
+                result,
+                evidence_by_id,
+                required_metric_ids,
+            )
+        ):
+            unsupported_factual_claims = []
         if unsupported_factual_claims:
             violations.append("uncited_factual_claim")
 
         contradictory_claims = []
         unsupported_numeric_claims = []
+        globally_cited_evidence = [
+            evidence_by_id[citation.casefold()]
+            for citation in cited_ids
+            if citation.casefold() in evidence_by_id
+        ]
         for line in (
             clause
             for segment in _claim_text_segments(result)
@@ -4021,6 +4428,13 @@ class ProviderOutputGuardAgent:
             }
             cited_evidence = [evidence_by_id[citation] for citation in line_citations]
             for claim_value, claim_unit, rounding_tolerance in _numeric_claims(line):
+                if _is_grounded_report_year_claim(
+                    line,
+                    claim_value,
+                    claim_unit,
+                    globally_cited_evidence,
+                ):
+                    continue
                 compatible = [
                     item
                     for item in cited_evidence
@@ -4058,6 +4472,57 @@ class ProviderOutputGuardAgent:
         if not cited_ids:
             warnings.append("no_evidence_citations")
         if violations:
+            retryable_violations = {
+                "contradictory_numeric_citation",
+                "evidence_company_mismatch",
+                "question_metric_not_addressed",
+                "uncited_factual_claim",
+                "uncited_numeric_claim",
+            }
+            strategy_provider = self.strategy_provider
+            if (
+                isinstance(result, str)
+                and request_context.get("question")
+                and strategy_provider is not None
+                and getattr(strategy_provider, "configured", False)
+                and set(violations).issubset(retryable_violations)
+            ):
+                context = _build_strategy_context(state)
+                correction_prompt = (
+                    _build_strategy_prompt(context)
+                    + "\n\n[CORRECTION]\n"
+                    + "이전 응답은 검증을 통과하지 못했습니다. 새 응답을 작성하세요. "
+                    + "모든 기업별 수치와 품질 상태, 사실 문장·절마다 해당 evidence_id를 "
+                    + "바로 붙이고, 질문에 직접 필요한 결론과 근거만 답하세요. "
+                    + "근거 없는 추가 사실이나 내부 필드명은 쓰지 마세요."
+                    + "\n[/CORRECTION]"
+                )
+                try:
+                    corrected_result = strategy_provider.analyze(
+                        prompt=correction_prompt,
+                        context=context,
+                    )
+                except Exception:
+                    corrected_result = None
+                if corrected_result is not None:
+                    retry_state = {
+                        **state,
+                        "provider": {
+                            **provider,
+                            "status": "completed",
+                            "result": corrected_result,
+                            "validation_retry_count": 1,
+                        },
+                    }
+                    corrected = ProviderOutputGuardAgent().run(
+                        observations,
+                        retry_state,
+                    )
+                    if (
+                        corrected.get("provider_output_validation", {}).get("status")
+                        == "passed"
+                    ):
+                        return corrected
             provider.update({
                 "status": "rejected",
                 "result": None,
@@ -4076,6 +4541,10 @@ class ProviderOutputGuardAgent:
                     "contradictory_numeric_claims": contradictory_claims,
                     "unsupported_numeric_claims": unsupported_numeric_claims,
                     "unsupported_factual_claims": unsupported_factual_claims,
+                    "evidence_company_mismatches": evidence_company_mismatches,
+                    "required_question_metric_ids": required_metric_ids,
+                    "addressed_question_metric_ids": sorted(addressed_metric_ids),
+                    "unaddressed_question_metric_groups": unaddressed_metric_groups,
                 },
             }
         return {
@@ -4090,6 +4559,10 @@ class ProviderOutputGuardAgent:
                 "contradictory_numeric_claims": [],
                 "unsupported_numeric_claims": [],
                 "unsupported_factual_claims": [],
+                "evidence_company_mismatches": [],
+                "required_question_metric_ids": required_metric_ids,
+                "addressed_question_metric_ids": sorted(addressed_metric_ids),
+                "unaddressed_question_metric_groups": [],
             },
         }
 
@@ -4116,9 +4589,12 @@ class ResponseGuardAgent:
         missing = [key for key in required if key not in state]
         if missing:
             raise AgentFailure(f"response is missing required sections: {', '.join(missing)}")
+        provider_result = state["provider"].get("result")
         if _contains_sensitive_key(
-            state["provider"].get("result")
-        ) or _contains_credential_literal(state["provider"].get("result")):
+            provider_result
+        ) or _contains_credential_literal(
+            _without_safe_public_provider_literals(provider_result)
+        ):
             raise AgentFailure("provider result contains sensitive content")
         if (
             state["provider_policy"].get("status") == "blocked"
@@ -4750,7 +5226,7 @@ class WorkforceAgentOrchestrator:
             DecisionSupportAgent(),
             ProviderPolicyAgent(),
             StrategyInterpreterAgent(self.provider),
-            ProviderOutputGuardAgent(),
+            ProviderOutputGuardAgent(self.provider),
             ResponseGuardAgent(),
         ):
             self._run_one(agent, normalized, state, traces)

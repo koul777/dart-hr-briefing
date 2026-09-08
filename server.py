@@ -1965,7 +1965,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header(str(key), str(value))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(body)
 
     def request_correlation_id(self) -> str:
         request_id = getattr(self, "_request_id", "")
@@ -2237,6 +2238,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.log_internal_error(exc)
             self.send_json({"error": "서버 처리 중 오류가 발생했습니다."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def do_HEAD(self) -> None:
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
 
     def do_GET(self) -> None:
         self._request_id = secrets.token_hex(8)
@@ -2601,7 +2609,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Request-ID", self.request_correlation_id())
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(body)
 
 
 def run_local_server() -> None:

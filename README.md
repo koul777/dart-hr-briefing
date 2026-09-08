@@ -8,17 +8,17 @@
 
 OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도와 보고서로 묶어 비교하고, **무엇을 판단할 수 있는지·무엇을 더 확인해야 하는지**를 근거와 함께 제시하는 People Analytics 프로그램입니다. AI는 사용자가 직접 실행하는 선택적 해석 보조이며, 결정 브리프와 수치는 AI 없이도 동일 입력에 동일 결과를 냅니다.
 
-<p align="center"><a href="https://dart-ruby-zeta.vercel.app"><strong>▶ 공개 앱 실행</strong></a> · <a href="OpenDART_HR_Analytics_4시간_커리큘럼.md">4시간 실습 커리큘럼</a> · <a href="docs/HR_DECISION_SUPPORT.md">HR 판단지원 해설</a></p>
+<p align="center"><strong>운영 앱:</strong> <a href="https://dart-ruby-zeta.vercel.app"><strong>https://dart-ruby-zeta.vercel.app</strong></a> · <a href="OpenDART_HR_Analytics_4시간_커리큘럼.md">4시간 실습 커리큘럼</a> · <a href="docs/HR_DECISION_SUPPORT.md">HR 판단지원 해설</a></p>
 
 ## 현재 배포 상태
 
 | 항목 | 현재 상태 |
 | --- | --- |
 | 운영 URL | [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app) |
-| 릴리스 상태 | v0.2.0. 운영 URL의 실제 리비전은 `/api/health`의 `build_id`와 배포 대상 commit SHA를 대조해 확인합니다. |
+| 릴리스 상태 | v0.2.0. 질문 적합성·기업별 근거 귀속 보강은 로컬 검증 완료·운영 반영 전이며, 배포 후 `/api/health`의 `build_id`와 배포 대상 commit SHA를 대조합니다. |
 | 데이터 | OpenDART 재무·직원·임원 공시, 기업 단위 집계 |
 | AI | 사용자가 입력한 OpenAI API Key로 명시적 실행 |
-| 안전장치 | 개인정보·근거·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
+| 안전장치 | 질문 지표 적합성, 기업·수치·근거 귀속, 개인정보·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
 | 검증 | Python 3.11~3.14 전체 회귀, coverage·lint·프론트엔드 구문·Windows 패키지 smoke 검사 |
 | 강의 자료 | 최종 편성 기준 16:9 총 60장(본문 42장·부록 18장). 원고·발표자 노트·자산 계약은 `training_deck/final_60/` 기준 |
 | 홍보영상 | [`docs/assets/dart-hr-briefing-promo.mp4`](docs/assets/dart-hr-briefing-promo.mp4), 1920×1080·30fps·36.2초 |
@@ -35,6 +35,9 @@ post-deploy smoke가 root·정적 자산·소스 비공개·합성 데이터 계
   3개 결정 브리프와 5개 readiness 차원으로 연결하고, 모든 수치에 evidence ID를 유지합니다.
 - **AI 안전 경계 강화:** 개인정보, 근거 없는 수치·인과, 개인 평가, 채용·승진·보상·해고 같은
   자동 인사조치 권고를 일반 문장과 중첩 JSON 모두에서 검사하고, 차단 시 검증된 근거 대체 응답만 표시합니다.
+- **AI 질문 정확성 검증:** 질문에서 요구한 지표와 실제 인용 지표가 같은 답변 구간에 있는지 확인하고,
+  기업명과 `EV-…` 근거의 기업 귀속이 다르거나 질문과 무관한 답·모호한 비답변·분리된 형식적 인용이면
+  원문을 폐기하고 검증된 근거 대체 응답으로 전환합니다.
 - **실패 복구와 요청 예산:** OpenDART 재시도·fan-out·deadline을 제한하고, 기업·기간 변경 시
   진행 중인 비교와 AI 요청을 취소해 오래된 응답이 새 화면을 덮지 못하게 했습니다.
 - **릴리스 보안:** Windows 실행 파일 preflight·strict smoke, Vercel function-first·default-deny
@@ -338,6 +341,9 @@ AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 �
 
 - 서버 evidence ledger에서 형식과 공식 DART 원문 링크가 확인된 근거만 선택
 - 기업명·지표·값과 `EV-…` 근거 ID를 함께 표시
+- 질문이 요구한 지표가 같은 답변 구간에서 직접 다뤄졌는지 확인
+- 각 기업명·수치 바로 뒤의 `EV-…`가 실제로 같은 기업의 근거인지 확인
+- 질문과 무관한 근거, 모호한 비답변, 문맥에서 분리된 형식적 인용을 차단
 - 차단 사유를 사용자 친화적인 검증 항목으로 설명
 - 기업 공시 비교는 인과관계나 개인의 성과·채용·평가 판단이 아니라는 해석 한계 유지
 - 안전하게 표시할 근거가 없으면 수치나 결론을 새로 만들지 않고 명시적으로 중단
@@ -358,6 +364,8 @@ decision_support → provider_policy → strategy_interpreter → provider_outpu
 - 각 지표는 후행 지표, 조기점검 대리 지표, 벤치마크, 데이터 공백으로 구분하고 해석 한계를 함께 제공합니다.
 - 재무·직원·임원·미등기임원 보수의 출처를 컴포넌트별로 분리합니다.
 - 파생 지표는 필요한 모든 원천 컴포넌트의 접수번호가 있을 때만 AI 컨텍스트에 포함합니다.
+- `provider_output_guard`는 질문의 명시적 지표와 인용 지표의 문맥 일치, 기업명과 근거 원장의 기업 귀속을
+  함께 검사합니다. `orchestration_evaluation`도 같은 규칙을 독립적으로 재검증해 사후 변조를 차단합니다.
 - 한 단계가 실패하면 의존 단계가 `blocked`로 trace에 남고 AI 호출은 진행하지 않습니다.
 - 개인정보, 허용되지 않은 evidence ID, 근거 없는 숫자, 인용 값과 모순되는 숫자, 근거 없는 인과 단정, 가공 인물에 대한 개인 판단이 AI
   출력에 있으면 provider 결과를 `rejected`로 폐기합니다.
@@ -554,10 +562,14 @@ node --check tools/qa_orchestration_v2.js
 python tools/benchmark_orchestration.py --iterations 100 --warmups 5
 ```
 
-현재 Python 3.12 전체 451건 회귀와 제품 모듈 branch coverage 86%, 핵심 v2 DAG 93%를
+현재 Python 3.12 전체 466건 회귀와 제품 모듈 branch coverage 86%, 핵심 v2 DAG 93%를
 기준으로 관리합니다. `jsonschema`는 핵심 런타임 의존성이며 소스·패키지 모두 strict schema를
 기본으로 검증합니다. 지원 Python 버전별 CI도 같은 전체 계약을 실행해야 합니다. 테스트 개수는
 구현에 따라 달라질 수 있으므로 성공 여부는 명령의 종료 코드와 실패 내역으로 판단합니다.
+2026-09-08에는 테스트 전용 `StrategyProvider` 어댑터로 실제 Claude 모델을 호출해
+직원 1인당 매출 비교, 평균 급여 비교, 급여와 영업이익의 인과 한계 질문을 E2E로 재검증했으며
+3문항 모두 질문 적합성·수치 일치·기업별 근거 귀속·인과 제한 검사를 통과했습니다.
+이는 로컬 실제 모델 검증 결과이며 위 운영 URL의 AI provider 배포 완료를 뜻하지 않습니다.
 격리 PyInstaller smoke에서는 `tools/packaged_runtime_smoke.py`로 strict schema를 켠 실제 OpenDART schema v2 응답과 evidence 41/41건 원문 연결을
 확인했고, headless Edge에서는 공식 citation 링크와 unsafe URL 비링크를 비롯해 원자적 비교 커밋,
 기간 변경 시 AI 취소, 숫자 경계, CSV 수식 주입 방어를 검증했습니다.

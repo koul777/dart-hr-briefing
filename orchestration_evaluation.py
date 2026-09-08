@@ -19,14 +19,18 @@ from agent_orchestration import (
     DECISION_DIMENSION_SPECS,
     DECISION_METRIC_SPECS,
     PERSON_REFERENCE_CONTEXT_PATTERN,
+    _addressed_question_metric_ids,
     _claim_clauses,
     _claim_text_segments,
+    _citation_company_mismatches,
     _contains_automated_hr_action_recommendation,
     _contains_credential_literal,
     _contains_explicit_credential_literal,
     _contains_direct_identifier_literal,
     _contains_direct_personal_identifier_literal,
     _contains_fabricated_person_judgment,
+    _direct_comparison_summary_supported,
+    _is_grounded_report_year_claim,
     _contains_protected_characteristic_judgment,
     _contains_prompt_personal_identifier_literal,
     _contains_structured_hr_action_recommendation,
@@ -37,7 +41,9 @@ from agent_orchestration import (
     _decision_position_conclusion,
     _possible_fabricated_person_reference,
     _possible_named_person_reference,
+    _question_required_metric_groups,
     _uncited_factual_claims,
+    _without_safe_public_provider_literals,
 )
 
 
@@ -121,6 +127,14 @@ def _claim_segments(value: Any) -> list[str]:
 def _numeric_claims(text: str) -> list[tuple[float, str, float]]:
     claims = []
     without_ids = EVIDENCE_TOKEN_PATTERN.sub("", text)
+    compound_money_pattern = re.compile(
+        r"(?<!\d)(\d[\d,]*)\s*억\s*(\d[\d,]*)\s*만\s*원"
+    )
+    for match in compound_money_pattern.finditer(without_ids):
+        major = float(match.group(1).replace(",", ""))
+        minor = float(match.group(2).replace(",", ""))
+        claims.append((major * 100_000_000 + minor * 10_000, "원", 10_000.0))
+    without_ids = compound_money_pattern.sub("", without_ids)
     for raw_value, raw_unit in NUMERIC_CLAIM_PATTERN.findall(without_ids):
         normalized_value = raw_value.replace(",", "")
         try:
@@ -851,12 +865,20 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
         )
     except RecursionError:
         privacy_literal_exposed = False
-    for privacy_surface in (result.get("request"), provider.get("result")):
+    for is_provider_result, privacy_surface in (
+        (False, result.get("request")),
+        (True, provider.get("result")),
+    ):
         try:
             privacy_surface_text = _provider_text(privacy_surface)
         except (TypeError, ValueError, RecursionError):
             continue
-        if _contains_direct_identifier_literal(privacy_surface):
+        privacy_scan_surface = (
+            _without_safe_public_provider_literals(privacy_surface)
+            if is_provider_result
+            else privacy_surface
+        )
+        if _contains_direct_identifier_literal(privacy_scan_surface):
             privacy_literal_exposed = True
         if (
             PERSON_REFERENCE_CONTEXT_PATTERN.search(privacy_surface_text)
@@ -1082,16 +1104,84 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
     except RecursionError:
         provider_claim_segments = []
         failures.append("invalid_provider_output_shape")
-    uncited_numeric_lines = [
-        index
-        for index, line in enumerate(provider_claim_segments, start=1)
-        if NUMERIC_CLAIM_PATTERN.search(line) and not EVIDENCE_PATTERN.search(line)
-    ]
     evidence_by_id = {
         str(item.get("evidence_id") or "").casefold(): item
         for item in provider_evidence
         if item.get("evidence_id")
     }
+    globally_cited_evidence = [
+        evidence_by_id[citation.casefold()]
+        for citation in cited_ids
+        if citation.casefold() in evidence_by_id
+    ]
+    uncited_numeric_lines = [
+        index
+        for index, line in enumerate(provider_claim_segments, start=1)
+        if (
+            NUMERIC_CLAIM_PATTERN.search(line)
+            and not EVIDENCE_PATTERN.search(line)
+            and not all(
+                _is_grounded_report_year_claim(
+                    line,
+                    claim,
+                    unit,
+                    globally_cited_evidence,
+                )
+                for claim, unit, _tolerance in _numeric_claims(line)
+            )
+        )
+    ]
+    try:
+        evidence_company_mismatches = _citation_company_mismatches(
+            provider.get("result"),
+            evidence_by_id,
+        )
+    except RecursionError:
+        evidence_company_mismatches = []
+        if "invalid_provider_output_shape" not in failures:
+            failures.append("invalid_provider_output_shape")
+    request_context = (
+        result.get("request") if isinstance(result.get("request"), Mapping) else {}
+    )
+    required_metric_groups = _question_required_metric_groups(
+        request_context.get("question"),
+        request_context.get("metric_ids") or (),
+    )
+    available_metric_ids = {
+        str(item.get("metric_id") or "") for item in provider_evidence
+    }
+    required_metric_ids = list(dict.fromkeys(
+        metric_id for group in required_metric_groups for metric_id in group
+    ))
+    if (
+        unsupported_factual_claims == [{"segment_index": 1, "claim_type": "factual"}]
+        and _direct_comparison_summary_supported(
+            provider.get("result"),
+            evidence_by_id,
+            required_metric_ids,
+        )
+    ):
+        unsupported_factual_claims = []
+    try:
+        addressed_metric_ids = _addressed_question_metric_ids(
+            provider.get("result"),
+            evidence_by_id,
+            required_metric_ids,
+        )
+    except RecursionError:
+        addressed_metric_ids = set()
+        if "invalid_provider_output_shape" not in failures:
+            failures.append("invalid_provider_output_shape")
+    required_available_groups = [
+        tuple(metric_id for metric_id in group if metric_id in available_metric_ids)
+        for group in required_metric_groups
+    ]
+    required_available_groups = [group for group in required_available_groups if group]
+    unaddressed_metric_groups = [
+        list(group)
+        for group in required_available_groups
+        if not addressed_metric_ids.intersection(group)
+    ]
     unsupported_numeric_claims = []
     for segment_index, segment in enumerate(provider_claim_segments, start=1):
         segment_ids = {
@@ -1101,6 +1191,13 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
         }
         cited_evidence = [evidence_by_id[evidence_id] for evidence_id in segment_ids]
         for claim, unit, tolerance in _numeric_claims(segment):
+            if _is_grounded_report_year_claim(
+                segment,
+                claim,
+                unit,
+                globally_cited_evidence,
+            ):
+                continue
             if not any(
                 _claim_matches_evidence(claim, unit, tolerance, item)
                 for item in cited_evidence
@@ -1111,6 +1208,10 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
                     "cited_evidence_ids": sorted(segment_ids),
                 })
     if provider_status == "completed":
+        if evidence_company_mismatches:
+            failures.append("provider_evidence_company_mismatch")
+        if unaddressed_metric_groups:
+            failures.append("provider_question_metric_not_addressed")
         if unsupported_factual_claims:
             failures.append("provider_factual_claim_without_citation")
         if uncited_numeric_lines:
@@ -1192,6 +1293,8 @@ def evaluate_orchestration_result(result: Mapping[str, Any]) -> dict[str, Any]:
             "uncited_numeric_line_numbers": uncited_numeric_lines,
             "unsupported_numeric_claims": unsupported_numeric_claims,
             "unsupported_factual_claims": unsupported_factual_claims,
+            "evidence_company_mismatches": evidence_company_mismatches,
+            "unaddressed_question_metric_groups": unaddressed_metric_groups,
             "invalid_decision_support_evidence_ids": sorted(set(invalid_decision_evidence_ids)),
             "invalid_decision_support_peer_contexts": sorted(set(invalid_peer_contexts)),
             "invalid_decision_support_metric_assessments": sorted(set(invalid_metric_assessments)),
