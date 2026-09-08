@@ -15,17 +15,50 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 | 항목 | 현재 상태 |
 | --- | --- |
 | 운영 URL | [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app) |
-| 릴리스 상태 | v0.2.0. 질문 적합성·기업별 근거 귀속 및 `HEAD /` 연결 호환성 보강을 2026-09-08 운영에 반영했습니다. `/api/health`의 `build_id`와 배포 대상 commit SHA를 대조해 검증합니다. |
+| 상태 확인 URL | [`https://dart-ruby-zeta.vercel.app/api/health`](https://dart-ruby-zeta.vercel.app/api/health) |
+| 합성 샘플 API | [`https://dart-ruby-zeta.vercel.app/api/classroom/bootstrap`](https://dart-ruby-zeta.vercel.app/api/classroom/bootstrap) |
+| GitHub 저장소 | [`https://github.com/koul777/dart-hr-briefing`](https://github.com/koul777/dart-hr-briefing) |
+| Vercel 상태 | **Ready** · production deployment `dpl_5QWXzizp2zobJ1neqpNFr7F15we7` |
+| 운영 빌드 | v0.2.0 · [`git-78a9ae9932ee`](https://github.com/koul777/dart-hr-briefing/commit/78a9ae9932ee) · 2026-09-08 23:01 KST 재확인 |
+| 릴리스 상태 | 질문 적합성·기업별 근거 귀속 및 `HEAD /` 연결 호환성 보강을 운영에 반영했습니다. `/api/health`의 `build_id`와 배포 대상 commit SHA를 대조해 검증합니다. |
 | 데이터 | OpenDART 재무·직원·임원 공시, 기업 단위 집계 |
-| AI | 사용자가 입력한 OpenAI API Key로 명시적 실행 |
+| AI | 사용자가 입력한 OpenAI API Key로 명시적 실행. 서버 소유 운영자 AI provider는 현재 비활성화 |
 | 안전장치 | 질문 지표 적합성, 기업·수치·근거 귀속, 개인정보·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
-| 검증 | Python 3.11~3.14 전체 회귀, coverage·lint·프론트엔드 구문·Windows 패키지 smoke 검사 |
+| 검증 | Python 466건 회귀 통과 · 실제 Claude 모델 질문 3/3 통과 · production post-deploy smoke 통과 |
 | 강의 자료 | 최종 편성 기준 16:9 총 60장(본문 42장·부록 18장). 원고·발표자 노트·자산 계약은 `training_deck/final_60/` 기준 |
 | 홍보영상 | [`docs/assets/dart-hr-briefing-promo.mp4`](docs/assets/dart-hr-briefing-promo.mp4), 1920×1080·30fps·36.2초 |
 
 운영 URL의 기능 여부는 문구만 믿지 않고 [`docs/PRODUCTION_RELEASE_CHECKLIST.md`](docs/PRODUCTION_RELEASE_CHECKLIST.md)의
 `/api/health` 빌드 ID와 합성 bootstrap 계약으로 확인합니다. 릴리스 때마다 배포 대상 SHA를 전달한
 post-deploy smoke가 root·정적 자산·소스 비공개·합성 데이터 계약을 함께 확인합니다.
+
+### 운영 접속 검증 기록
+
+2026-09-08 23:01 KST에 고정 운영 주소를 외부에서 다시 확인한 결과입니다. Vercel이 보여 주는
+개별 deployment URL은 배포할 때마다 바뀔 수 있으므로 공유·북마크에는 위의
+`https://dart-ruby-zeta.vercel.app`만 사용합니다.
+
+| 검사 | 확인 결과 |
+| --- | --- |
+| `HEAD /` | HTTP 200, 응답 본문 0 byte, `Content-Length: 11404` |
+| `GET /` | HTTP 200, `text/html; charset=utf-8`, 11,404 byte |
+| `GET /api/health` | HTTP 200, `app.id=kr.opendart.dart-hr-briefing`, `build_id=git-78a9ae9932ee` |
+| OpenDART | `api_key_configured: true` |
+| strict schema | `strict_schema_enabled: true`, validator ready |
+| 합성 수업 데이터 | `/api/classroom/bootstrap` 사용 가능, 외부 요청 0회 계약 |
+| 배포 smoke | root·health·정적 자산·21개 보호 경로·합성 bootstrap 전체 통과 |
+
+#### 2026-09-08 접속 장애 원인과 조치
+
+- 앱의 `GET /`은 열렸지만 `HEAD /`이 501을 반환해 HEAD를 먼저 보내는 연결 확인 도구·일부
+  클라이언트에서는 사이트가 연결되지 않는 것처럼 보일 수 있었습니다. 서버에 `do_HEAD`를 추가해
+  GET과 같은 상태·헤더를 반환하되 본문은 보내지 않도록 수정했고, 회귀 테스트 2건을 추가했습니다.
+- Git 연동 배포는 commit 작성자가 Vercel 프로젝트 배포 권한 사용자로 인식되지 않아 새 revision
+  배포가 차단됐습니다. Git 메타데이터를 포함하지 않은 검증된 23개 런타임 allowlist 소스 번들을
+  production에 배포하고 고정 alias를 갱신했습니다. 저장소의 이후 commit 작성자 설정도 GitHub
+  계정과 일치하도록 바로잡았습니다.
+- 수정 뒤 고정 운영 URL의 HEAD·GET·health와 post-deploy smoke를 모두 다시 실행했으며, 현재
+  production은 Vercel `Ready`입니다.
 
 ### 이번 릴리스 변경사항
 
@@ -249,6 +282,7 @@ AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 �
 
 | 증상 | 확인 및 해결 |
 | --- | --- |
+| 운영 URL이 연결되지 않음 | 고정 주소 [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app)을 다시 열고 아래의 HEAD·health 명령을 확인. 둘 다 200이면 강력 새로고침(`Ctrl+F5`), 시크릿 창, 다른 네트워크 순서로 브라우저 캐시·DNS·프록시를 분리 점검 |
 | DART HR Briefing이 아닌 다른 화면이 열림 | `/api/health`의 `app.id` 확인 → 다른 프로세스가 포트를 쓰면 종료하거나 이 서버를 다른 포트로 실행 |
 | 기업 검색 실패 | OpenDART 키 설정, 네트워크, `/api/health`의 `api_key_configured` 확인 |
 | 비교 버튼을 눌러도 진행되지 않음 | 기업을 1개 이상 선택했는지 확인. 연도·보고서 변경 후에는 비교를 다시 실행 |
@@ -257,6 +291,17 @@ AI 출력이 개인정보·근거·인과·개인판단 검증을 통과하지 �
 | AI 실행 실패 | OpenAI 키·계정 한도·네트워크를 확인. 결정 브리프와 일반 비교 기능은 AI 없이 계속 사용 가능 |
 | AI 검증 정책 차단 | 화면의 안전한 근거 대체 응답과 차단 항목을 확인한 뒤 질문 범위를 좁힘 |
 | CSV 버튼이 작동하지 않음 | 기업 비교를 먼저 실행하고 브라우저 다운로드 권한 확인 |
+
+```powershell
+curl.exe -I https://dart-ruby-zeta.vercel.app/
+Invoke-RestMethod https://dart-ruby-zeta.vercel.app/api/health
+```
+
+첫 명령은 `HTTP/1.1 200`, 두 번째 명령은 `ok: true`와
+`app.id: kr.opendart.dart-hr-briefing`을 반환해야 합니다. `/api/health`의
+`ai_provider_configured: false`만으로는 접속 장애가 아닙니다. 이 값은 서버 소유 운영자 AI provider가
+비활성화됐다는 뜻이며, DART 비교·Strategy Brief와 사용자가 자신의 OpenAI 키로 실행하는 경로는
+별도입니다.
 
 ## 3분 빠른 시작
 
@@ -384,7 +429,9 @@ HR 사용자가 readiness·confidence·선택 cohort·금지 용도를 해석하
 
 웹 배포형은 다음 흐름을 기준으로 사용합니다.
 
-운영 주소는 [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app)입니다. `/api/health`에서 앱 ID, OpenDART 키 구성 여부, strict schema 상태를 확인할 수 있습니다.
+운영 주소는 [`https://dart-ruby-zeta.vercel.app`](https://dart-ruby-zeta.vercel.app)이고, 상태 확인 주소는
+[`https://dart-ruby-zeta.vercel.app/api/health`](https://dart-ruby-zeta.vercel.app/api/health)입니다.
+health 응답에서 앱 ID, OpenDART 키 구성 여부, strict schema 상태와 배포 빌드 ID를 확인할 수 있습니다.
 
 1. 운영자가 Vercel 서버 환경변수에 `OPENDART_API_KEY`를 설정합니다. 이 키는 브라우저에 노출하거나 저장소에 커밋하지 않습니다.
 2. 사용자가 Vercel URL에 접속합니다.
@@ -397,6 +444,12 @@ OpenDART 인증키는 Vercel 서버 환경변수에서 읽습니다. 사용자�
 해당 브라우저 탭의 메모리에만 유지되고 서버에는 저장되지 않습니다. OpenAI 키가
 없어도 DART 기반 비교·People·Executives·Strategy Brief 시각화는 사용할 수 있고
 AI 자동 해석만 제한됩니다.
+
+현재 production health의 `ai_provider_configured`는 `false`, `operator_ai_access.enabled`는
+`false`입니다. 이는 서버 소유 Claude MCP/운영자 자동화 provider를 익명 사용자가 호출할 수 없다는
+뜻입니다. 사용자가 AI 카드에 직접 넣는 OpenAI 키는 요청 헤더로 전달되어 별도의 요청별 provider를
+만들며, 서버 설정이나 브라우저 저장소에 보관되지 않습니다. 운영 확인 과정에서는 실제 사용자 키를
+사용하거나 저장하지 않았으므로, production의 유료 AI 호출 성공을 health 결과만으로 주장하지 않습니다.
 
 > 공개 서비스에서는 DART 호출량 제한, 사용자별 요청 제한, API 키 미노출 정책을 함께 적용해야 합니다. 인증키를 query string이나 프론트엔드 코드에 포함하지 않습니다.
 
@@ -570,6 +623,17 @@ python tools/benchmark_orchestration.py --iterations 100 --warmups 5
 직원 1인당 매출 비교, 평균 급여 비교, 급여와 영업이익의 인과 한계 질문을 E2E로 재검증했으며
 3문항 모두 질문 적합성·수치 일치·기업별 근거 귀속·인과 제한 검사를 통과했습니다.
 이는 로컬 실제 모델 검증 결과이며 위 운영 URL의 AI provider 배포 완료를 뜻하지 않습니다.
+
+| 실제 모델 질문 유형 | 확인한 핵심 계약 | 결과 |
+| --- | --- | --- |
+| 두 기업 중 직원 1인당 매출이 더 높은 기업 | 질문 지표를 직접 답하고 해당 기업의 값·`EV-…` 근거를 같은 답변 구간에 귀속 | 통과 |
+| 두 기업 중 평균 급여가 더 높은 기업 | 매출 등 다른 지표로 바꾸지 않고 평균 급여 값과 기업별 근거를 일치 | 통과 |
+| 평균 급여 변화와 영업이익 변화의 관계 | 공시의 동시 변화만으로 인과를 단정하지 않고 가설·추가 검증 데이터로 제한 | 통과 |
+
+이 검증은 “모델이 문장을 생성했다”만 확인한 것이 아닙니다. 질문과 답변 지표의 문맥 일치,
+숫자와 evidence ledger 값의 일치, 기업명과 evidence ID의 소유 기업 일치, 근거 없는 인과·개인판단·
+자동 인사조치 권고 부재를 런타임 guard와 독립 평가기로 각각 검사했습니다. 실패하는 원문은 사용자에게
+그대로 노출하지 않고 검증된 근거 대체 응답으로 전환합니다.
 격리 PyInstaller smoke에서는 `tools/packaged_runtime_smoke.py`로 strict schema를 켠 실제 OpenDART schema v2 응답과 evidence 41/41건 원문 연결을
 확인했고, headless Edge에서는 공식 citation 링크와 unsafe URL 비링크를 비롯해 원자적 비교 커밋,
 기간 변경 시 AI 취소, 숫자 경계, CSV 수식 주입 방어를 검증했습니다.
