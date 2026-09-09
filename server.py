@@ -2043,7 +2043,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return False
         fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
         if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
-            return False
+            try:
+                navigation_path = urlparse(_effective_request_target(self.path)).path
+            except (AttributeError, ValueError):
+                return False
+            is_root_document_navigation = (
+                fetch_site == "cross-site"
+                and getattr(self, "command", "").upper() in {"GET", "HEAD"}
+                and self.headers.get("Sec-Fetch-Mode", "").strip().lower() == "navigate"
+                and self.headers.get("Sec-Fetch-Dest", "").strip().lower() == "document"
+                and navigation_path == "/"
+            )
+            if not is_root_document_navigation:
+                return False
         origin = self.headers.get("Origin", "").strip()
         if not origin:
             return True

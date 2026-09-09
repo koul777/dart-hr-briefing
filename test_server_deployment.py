@@ -1593,6 +1593,24 @@ class ServerDeploymentTests(unittest.TestCase):
         }
         self.assertFalse(request_handler.origin_allowed())
 
+        request_handler.command = "GET"
+        request_handler.path = "/"
+        request_handler.headers = {
+            "Host": "127.0.0.1:8765",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+        }
+        self.assertTrue(request_handler.origin_allowed())
+
+        for unsafe_request in (
+            ("POST", "/"),
+            ("GET", "/api/health"),
+        ):
+            with self.subTest(unsafe_request=unsafe_request):
+                request_handler.command, request_handler.path = unsafe_request
+                self.assertFalse(request_handler.origin_allowed())
+
         request_handler.headers = {
             "Host": "127.0.0.1:8765",
             "Sec-Fetch-Site": "same-origin",
