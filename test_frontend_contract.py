@@ -68,7 +68,7 @@ class FrontendVisualContractTests(unittest.TestCase):
         self.assertIn("cancelPromptRequest();", self.app[selection_start:selection_end])
         self.assertIn("cancelPromptRequest();", self.app[selection_end:period_end])
 
-        fallback_start = self.app.index("function buildValidatedFallback(payload)")
+        fallback_start = self.app.index("function buildValidatedFallback(payload, question")
         fallback_end = self.app.index("function renderProviderEvidenceText", fallback_start)
         fallback = self.app[fallback_start:fallback_end]
         self.assertIn("boundedRequestId(payload?.request_id)", fallback)
@@ -238,11 +238,16 @@ class FrontendVisualContractTests(unittest.TestCase):
     def test_rejected_ai_output_uses_validated_evidence_fallback(self) -> None:
         for marker in (
             "function buildValidatedFallback",
+            "function buildVerifiedQuestionComparison",
+            "function inferredAnalysisMetricIds",
             'providerStatus === "rejected"',
-            "buildValidatedFallback(payload)",
+            "buildValidatedFallback(payload, question)",
             "payload.provider_validation || payload.provider_output_validation",
-            "서버가 검증한 OpenDART 근거만 표시합니다.",
-            "인과관계나 개인의 성과·채용·평가 판단을 뜻하지 않습니다.",
+            "사용자 질문에는 문제가 없습니다.",
+            "앱이 검증된 OpenDART 수치로 비교 결과를 직접 계산했습니다.",
+            '"revenue_per_employee", "operating_profit_per_employee"',
+            "낮은 값 대비",
+            "사업구조·자동화 수준·외주 인력 차이를 보정한 생산성 평가가 아닙니다.",
             "guardedFallback: true",
             'uncited_factual_claim: "근거 ID 없는 사실 주장"',
             'automated_hr_action_recommendation: "자동 인사조치 권고"',
@@ -252,6 +257,9 @@ class FrontendVisualContractTests(unittest.TestCase):
                 self.assertIn(marker, self.app)
         self.assertIn("evidenceSourceUrl(item)", self.app)
         self.assertIn("item.source_coverage_complete === true", self.app)
+        self.assertEqual(self.app.count("metric_ids: analysisMetricIds(question)"), 2)
+        self.assertIn("const verifiedComparison = buildVerifiedQuestionComparison(payload, question)", self.app)
+        self.assertIn("[AI 보충 해석]", self.app)
 
     def test_people_response_reuses_executive_metrics(self) -> None:
         self.assertIn("executivesFromPeople", self.app)

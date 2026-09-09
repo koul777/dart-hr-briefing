@@ -625,7 +625,8 @@ function renderEvidenceText(value, ledger = []) {
 function formatValidatedEvidenceValue(item) {
   const value = numberValue(item?.value);
   if (value === null) return "값 확인 필요";
-  if (["assets", "liabilities", "equity", "cash", "revenue", "operating_profit", "annual_salary_total", "revenue_per_employee", "operating_profit_per_employee"].includes(item.metric_id)) return fmtAmount(value);
+  if (["revenue_per_employee", "operating_profit_per_employee"].includes(item.metric_id)) return `${(value / 100000000).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}억 원/인`;
+  if (["assets", "liabilities", "equity", "cash", "revenue", "operating_profit", "annual_salary_total"].includes(item.metric_id)) return fmtAmount(value);
   if (item.metric_id === "average_salary") return fmtSalary(value);
   if (["operating_margin", "net_margin", "debt_ratio", "salary_to_revenue", "contract_share"].includes(item.metric_id)) return fmtPercent(value);
   if (item.metric_id === "current_ratio") return fmtRatio(value);
@@ -634,14 +635,59 @@ function formatValidatedEvidenceValue(item) {
   const unit = String(item.unit || "").trim();
   return `${value.toLocaleString("ko-KR", { maximumFractionDigits: 2 })}${unit ? ` ${unit}` : ""}`;
 }
-function buildValidatedFallback(payload) {
-  const validation = payload.provider_validation || payload.provider_output_validation || {};
-  const violationCodes = [...new Set(validation.violation_codes || [])];
-  const violationSummary = violationCodes.length
-    ? violationCodes.map((code) => providerViolationLabels[code] || "안전 검증 기준 미충족").join(" · ")
-    : "안전 검증 기준 미충족";
-  const responseRequestId = boundedRequestId(payload?.request_id);
-  const requestedMetrics = new Set(payload.request?.metric_ids || state.selectedMetrics || []);
+
+function inferredAnalysisMetricIds(question) {
+  const latestQuestion = String(question || "").split(/\[새 질문\]|\[NEW QUESTION\]/i).pop().toLowerCase();
+  const rules = [
+    [["인당 생산성", "인력 생산성", "workforce productivity"], ["revenue_per_employee", "operating_profit_per_employee"]],
+    [["직원 1인당 매출", "인당 매출", "매출/인", "revenue per employee"], ["revenue_per_employee"]],
+    [["직원 1인당 영업이익", "인당 영업이익", "operating profit per employee"], ["operating_profit_per_employee"]],
+    [["평균 급여", "평균급여", "평균 보상", "average salary", "average pay"], ["average_salary"]],
+    [["직원 수", "총 직원", "인력 규모", "headcount", "employee count"], ["employees_total"]],
+    [["계약직 비중", "contract share"], ["contract_share"]],
+    [["평균 근속", "근속기간", "average tenure"], ["average_tenure_years"]],
+    [["영업이익률", "operating margin"], ["operating_margin"]],
+    [["영업이익", "operating profit"], ["operating_profit"]],
+    [["매출", "revenue", "sales"], ["revenue"]],
+  ];
+  const metricIds = rules.flatMap(([hints, ids]) => hints.some((hint) => latestQuestion.includes(hint)) ? ids : []);
+  const unique = [...new Set(metricIds)];
+  return unique.filter((metricId) => !(
+    (metricId === "revenue" && unique.includes("revenue_per_employee"))
+    || (metricId === "operating_profit" && unique.includes("operating_profit_per_employee"))
+  ));
+}
+
+function analysisMetricIds(question) {
+  return [...new Set([...inferredAnalysisMetricIds(question), ...state.selectedMetrics])];
+}
+
+function buildVerifiedMetricComparison(metricId, evidence) {
+  const seenCompanies = new Set();
+  const rows = evidence.filter((item) => {
+    const companyKey = item?.company?.corp_code || item?.company?.corp_name;
+    if (item.metric_id !== metricId || !companyKey || seenCompanies.has(companyKey)) return false;
+    seenCompanies.add(companyKey);
+    return true;
+  }).sort((left, right) => numberValue(right.value) - numberValue(left.value));
+  if (rows.length < 2) return [];
+  const highest = rows[0];
+  const lowest = rows.at(-1);
+  const difference = numberValue(highest.value) - numberValue(lowest.value);
+  const relativeDifference = numberValue(lowest.value) > 0 ? difference / numberValue(lowest.value) * 100 : null;
+  const scopeLabel = rows.length === 2 ? "두 기업 차이" : "최고·최저 차이";
+  const differenceLabel = formatValidatedEvidenceValue({ ...highest, value: difference });
+  const relativeLabel = relativeDifference === null
+    ? ""
+    : ` · 낮은 값 대비 ${relativeDifference.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`;
+  return [
+    `[${evidenceMetricLabels[metricId] || metricId}]`,
+    ...rows.map((item) => `- ${item.company?.corp_name || "기업"}: ${formatValidatedEvidenceValue(item)} [${item.evidence_id}]`),
+    `- ${scopeLabel}: ${differenceLabel}${relativeLabel} (${highest.company?.corp_name || "높은 기업"} > ${lowest.company?.corp_name || "낮은 기업"})`,
+  ];
+}
+
+function validatedResponseEvidence(payload) {
   const ledger = (payload.evidence?.ledger || []).filter((item) => (
     item
     && /^EV-[0-9a-f]{12}$/i.test(String(item.evidence_id || ""))
@@ -650,16 +696,64 @@ function buildValidatedFallback(payload) {
     && evidenceSourceUrl(item)
   ));
   const completeEvidence = ledger.filter((item) => item.source_coverage_complete === true);
-  const safeEvidence = completeEvidence.length ? completeEvidence : ledger;
+  return completeEvidence.length ? completeEvidence : ledger;
+}
+
+function buildVerifiedQuestionComparison(payload, question) {
+  if (!/(비교|차이|대비|더\s*(?:높|낮|많|적)|\bvs\.?\b|versus)/i.test(String(question || ""))) return null;
+  const metricIds = inferredAnalysisMetricIds(question || payload.request?.question);
+  if (!metricIds.length) return null;
+  const evidence = validatedResponseEvidence(payload).filter((item) => metricIds.includes(item.metric_id)).slice(0, 16);
+  const comparisonBlocks = metricIds.map((metricId) => buildVerifiedMetricComparison(metricId, evidence)).filter((lines) => lines.length);
+  if (!comparisonBlocks.length) return null;
+  const comparisonLines = comparisonBlocks.flatMap((lines, index) => index ? ["", ...lines] : lines);
+  return {
+    answer: [
+      "[검증 수치 비교]",
+      ...comparisonLines,
+      "",
+      "계산 기준: 인당 매출·인당 영업이익은 연결 재무 수치를 공시 직원 수로 나눈 값이며, 격차율은 낮은 값 대비입니다.",
+      "해석 한계: 기업 공시 집계값의 산술 비교이며 사업구조·자동화 수준·외주 인력 차이를 보정한 생산성 평가가 아닙니다.",
+    ].join("\n"),
+    evidence,
+  };
+}
+
+function buildValidatedFallback(payload, question = "") {
+  const validation = payload.provider_validation || payload.provider_output_validation || {};
+  const violationCodes = [...new Set(validation.violation_codes || [])];
+  const violationSummary = violationCodes.length
+    ? violationCodes.map((code) => providerViolationLabels[code] || "안전 검증 기준 미충족").join(" · ")
+    : "안전 검증 기준 미충족";
+  const responseRequestId = boundedRequestId(payload?.request_id);
+  const inferredMetrics = inferredAnalysisMetricIds(question || payload.request?.question);
+  const requestedMetrics = new Set(inferredMetrics.length ? inferredMetrics : (payload.request?.metric_ids || state.selectedMetrics || []));
+  const safeEvidence = validatedResponseEvidence(payload);
   const requestedEvidence = safeEvidence.filter((item) => requestedMetrics.has(item.metric_id));
-  const selectedEvidence = (requestedEvidence.length ? requestedEvidence : safeEvidence).slice(0, 8);
+  const selectedEvidence = (requestedEvidence.length ? requestedEvidence : safeEvidence).slice(0, 16);
+  const verifiedComparison = buildVerifiedQuestionComparison(payload, question);
   const evidenceLines = selectedEvidence.length
     ? selectedEvidence.map((item) => `- ${item.company?.corp_name || "기업"} · ${evidenceMetricLabels[item.metric_id] || item.metric_id}: ${formatValidatedEvidenceValue(item)} [${item.evidence_id}]`)
     : ["- 현재 질문에 안전하게 표시할 수 있는 공시 수치 근거가 없습니다."];
+  if (verifiedComparison) {
+    return {
+      answer: [
+        "사용자 질문에는 문제가 없습니다.",
+        "AI 초안이 검증을 통과하지 못해, 앱이 검증된 OpenDART 수치로 비교 결과를 직접 계산했습니다.",
+        "",
+        verifiedComparison.answer,
+        "",
+        `AI 초안 차단 사유: ${violationSummary}`,
+        ...(responseRequestId ? [`요청 ID: ${responseRequestId}`] : []),
+      ].join("\n"),
+      evidence: verifiedComparison.evidence,
+    };
+  }
   return {
     answer: [
-      "AI 초안은 안전 검증에서 차단되어, 서버가 검증한 OpenDART 근거만 표시합니다.",
-      `차단 사유: ${violationSummary}`,
+      "사용자 질문에는 문제가 없습니다.",
+      "AI 초안이 검증을 통과하지 못해, 서버가 검증한 OpenDART 근거만 표시합니다.",
+      `AI 초안 차단 사유: ${violationSummary}`,
       ...(responseRequestId ? [`요청 ID: ${responseRequestId}`] : []),
       "",
       ...evidenceLines,
@@ -1994,7 +2088,7 @@ async function fetchStructuredHandoff({ signal, selected, year, reportCode }) {
       corp_codes: selected.map((company) => company.corp_code),
       year,
       report_code: reportCode,
-      metric_ids: state.selectedMetrics,
+      metric_ids: analysisMetricIds(question),
       page: 1,
       page_size: 40,
     }),
@@ -2087,7 +2181,7 @@ async function runAiAnalysis() {
         corp_codes: state.selected.map((company) => company.corp_code),
         year: state.year,
         report_code: state.reportCode,
-        metric_ids: state.selectedMetrics,
+        metric_ids: analysisMetricIds(question),
         provider_data_consent: true,
         page: 1,
         page_size: 40,
@@ -2103,7 +2197,9 @@ async function runAiAnalysis() {
     const providerResult = provider.result ?? payload.provider_result;
     const providerPrompt = provider.prompt || payload.prompt || payload.prompt_handoff?.prompt || "";
     if (providerStatus === "completed" && providerResult !== null && providerResult !== undefined) {
-      const answer = typeof providerResult === "string" ? providerResult : JSON.stringify(providerResult, null, 2);
+      const providerAnswer = typeof providerResult === "string" ? providerResult : JSON.stringify(providerResult, null, 2);
+      const verifiedComparison = buildVerifiedQuestionComparison(payload, question);
+      const answer = verifiedComparison ? `${verifiedComparison.answer}\n\n[AI 보충 해석]\n${providerAnswer}` : providerAnswer;
       state.openAiProviderName = provider.name || "OpenAI API";
       state.openAiConnected = true;
       state.aiMessages.push(
@@ -2114,7 +2210,7 @@ async function runAiAnalysis() {
       renderAiConversation();
       renderApiConnection();
     } else if (providerStatus === "rejected") {
-      const fallback = buildValidatedFallback(payload);
+      const fallback = buildValidatedFallback(payload, question);
       state.openAiProviderName = provider.name || "OpenAI API";
       state.openAiConnected = true;
       state.aiMessages.push(
@@ -2123,8 +2219,8 @@ async function runAiAnalysis() {
       );
       $("#analysisPrompt").value = "";
       renderAiConversation();
-      renderApiConnection("AI 초안이 안전 검증에서 차단되어 검증된 OpenDART 근거로 대체했습니다.");
-      setMessage("AI 초안 대신 검증된 공시 근거 요약을 표시했습니다.");
+      renderApiConnection("AI 초안이 안전 검증에서 차단되어 검증된 OpenDART 수치 비교로 대체했습니다.");
+      setMessage("AI 초안 대신 검증된 공시 수치 비교를 표시했습니다.");
     } else {
       const providerName = provider.name || provider.id || "AI provider";
       const providerError = provider.error || payload.prompt_handoff?.error || `${providerName} 상태: ${providerStatus}`;

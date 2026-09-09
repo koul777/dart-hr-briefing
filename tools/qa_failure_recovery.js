@@ -148,9 +148,10 @@ function installApiMock(page, scenario) {
       scenario.analysisRequests.push({
         providerDataConsent: requestPayload.provider_data_consent,
         apiKey: route.request().headers()["x-openai-api-key"] || "",
+        metricIds: requestPayload.metric_ids || [],
       });
       await fulfillJson(route, {
-        request: { metric_ids: ["revenue", "operating_profit"] },
+        request: { metric_ids: ["revenue_per_employee", "operating_profit_per_employee"] },
         provider: {
           status: "rejected",
           name: "QA Mock Provider",
@@ -168,9 +169,9 @@ function installApiMock(page, scenario) {
             {
               evidence_id: "EV-111111111111",
               company: companies[0],
-              metric_id: "revenue",
-              value: 300_000_000_000_000,
-              unit: "KRW",
+              metric_id: "revenue_per_employee",
+              value: 2_600_000_000,
+              unit: "원",
               quality_status: "complete",
               source_coverage_complete: true,
               source_urls: ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250301000001"],
@@ -178,12 +179,32 @@ function installApiMock(page, scenario) {
             {
               evidence_id: "EV-222222222222",
               company: companies[1],
-              metric_id: "operating_profit",
-              value: 22_000_000_000_000,
-              unit: "KRW",
+              metric_id: "revenue_per_employee",
+              value: 2_000_000_000,
+              unit: "원",
               quality_status: "complete",
               source_coverage_complete: true,
               source_urls: ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250301000002"],
+            },
+            {
+              evidence_id: "EV-333333333333",
+              company: companies[0],
+              metric_id: "operating_profit_per_employee",
+              value: 400_000_000,
+              unit: "원",
+              quality_status: "complete",
+              source_coverage_complete: true,
+              source_urls: ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250301000003"],
+            },
+            {
+              evidence_id: "EV-444444444444",
+              company: companies[1],
+              metric_id: "operating_profit_per_employee",
+              value: 200_000_000,
+              unit: "원",
+              quality_status: "complete",
+              source_coverage_complete: true,
+              source_urls: ["https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250301000004"],
             },
           ],
         },
@@ -536,14 +557,14 @@ async function aiPolicyFallbackScenario(browser) {
     scenario.mode = "ai-policy-rejected";
     await page.locator("#openAiApiKey").fill(dummyApiKey);
     await page.locator("#aiTransferConsent").check();
-    await page.locator("#analysisPrompt").fill("근거가 확인된 집계 지표만 요약해줘");
+    await page.locator("#analysisPrompt").fill("선택 기업의 경쟁사 대비 인당 생산성 차이를 숫자로 비교해줘");
     await page.locator("#runAiButton").click();
     const fallback = page.locator("#aiResult");
-    await fallback.filter({ hasText: "AI 초안은 안전 검증에서 차단" }).waitFor({ timeout: 5_000 });
+    await fallback.filter({ hasText: "AI 초안이 검증을 통과하지 못해" }).waitFor({ timeout: 5_000 });
     const fallbackText = (await fallback.textContent()) || "";
     const bodyText = (await page.locator("body").textContent()) || "";
     for (const marker of (
-      ["자동 인사조치 권고", "보호 특성에 근거한 개인 판단", policyRequestId, "EV-111111111111"]
+      ["사용자 질문에는 문제가 없습니다", "인당 매출", "인당 영업이익", "두 기업 차이", "낮은 값 대비 30%", "낮은 값 대비 100%", "자동 인사조치 권고", "보호 특성에 근거한 개인 판단", policyRequestId, "EV-111111111111", "EV-444444444444"]
     )) {
       assert(fallbackText.includes(marker), `policy fallback is missing: ${marker}`);
     }
@@ -552,6 +573,8 @@ async function aiPolicyFallbackScenario(browser) {
     assert(scenario.analysisRequests.length === 1, "AI policy fallback did not make exactly one mocked analysis request");
     assert(scenario.analysisRequests[0].providerDataConsent === true, "provider consent was not sent");
     assert(scenario.analysisRequests[0].apiKey === dummyApiKey, "dummy API key was not confined to the mocked request header");
+    assert(scenario.analysisRequests[0].metricIds[0] === "revenue_per_employee", "productivity metric was not prioritized");
+    assert(scenario.analysisRequests[0].metricIds[1] === "operating_profit_per_employee", "profit productivity metric was not prioritized");
     await fallback.scrollIntoViewIfNeeded();
     const screenshot = await captureFailureState(page, "ai-policy-fallback.png");
     await verifyNoBrowserErrors(scenario);

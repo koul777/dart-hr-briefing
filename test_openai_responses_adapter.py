@@ -60,6 +60,9 @@ class OpenAIResponsesProviderTests(unittest.TestCase):
         self.assertEqual(body["model"], "test-model")
         self.assertEqual(body["input"], "DART context")
         self.assertFalse(body["store"])
+        self.assertIn("사용자의 최신 질문에 먼저 직접 답하세요", body["instructions"])
+        self.assertIn("기업명 외에는 실제 또는 가상의 사람 이름", body["instructions"])
+        self.assertNotIn("다음 순서를 따르세요", body["instructions"])
         self.assertNotIn("sk-test-key", request.data.decode("utf-8"))
         self.assertEqual(request.get_header("Authorization"), "Bearer sk-test-key")
 

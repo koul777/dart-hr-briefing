@@ -2028,6 +2028,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             file=sys.stderr,
         )
 
+    def log_provider_rejection(self, result: Mapping[str, Any]) -> None:
+        provider = result.get("provider")
+        if not isinstance(provider, Mapping) or provider.get("status") != "rejected":
+            return
+        validation = result.get("provider_validation")
+        raw_codes = validation.get("violation_codes") if isinstance(validation, Mapping) else []
+        safe_codes = [
+            code
+            for raw_code in (raw_codes if isinstance(raw_codes, list) else [])[:16]
+            if (code := re.sub(r"[^A-Za-z0-9_-]", "_", str(raw_code))[:64])
+        ]
+        print(
+            f"[{self.request_correlation_id()}] provider_output_rejected "
+            f"violation_codes={','.join(safe_codes) or 'unknown'}",
+            file=sys.stderr,
+        )
+
     def record_orchestration_telemetry(self, result: Mapping[str, Any]) -> None:
         try:
             ORCHESTRATION_TELEMETRY.record(result)
@@ -2290,6 +2307,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
                 response = build_response(FailClosedProviderFallback(provider))
                 validate_orchestration_response(response)
+            self.log_provider_rejection(response)
             self.record_orchestration_telemetry(response)
             self.send_json(response)
         except MalformedContentLength as exc:

@@ -24,7 +24,7 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 | 데이터 | OpenDART 재무·직원·임원 공시, 기업 단위 집계 |
 | AI | 사용자가 입력한 OpenAI API Key로 명시적 실행. 서버 소유 운영자 AI provider는 현재 비활성화 |
 | 안전장치 | 질문 지표 적합성, 기업·수치·근거 귀속, 개인정보·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
-| 검증 | Python 466건 회귀 통과 · 실제 Claude 모델 질문 3/3 통과 · production post-deploy smoke 통과 |
+| 검증 | Python 468건 회귀 통과 · 실제 Claude 모델 질문 3/3 통과 · production post-deploy smoke 통과 |
 | 강의 자료 | 최종 편성 기준 16:9 총 60장(본문 42장·부록 18장). 원고·발표자 노트·자산 계약은 `training_deck/final_60/` 기준 |
 | 홍보영상 | [`docs/assets/dart-hr-briefing-promo.mp4`](docs/assets/dart-hr-briefing-promo.mp4), 1920×1080·30fps·36.2초 |
 
@@ -615,7 +615,7 @@ node --check tools/qa_orchestration_v2.js
 python tools/benchmark_orchestration.py --iterations 100 --warmups 5
 ```
 
-현재 Python 3.12 전체 466건 회귀와 제품 모듈 branch coverage 86%, 핵심 v2 DAG 93%를
+현재 Python 3.12 전체 468건 회귀와 제품 모듈 branch coverage 86%, 핵심 v2 DAG 93%를
 기준으로 관리합니다. `jsonschema`는 핵심 런타임 의존성이며 소스·패키지 모두 strict schema를
 기본으로 검증합니다. 지원 Python 버전별 CI도 같은 전체 계약을 실행해야 합니다. 테스트 개수는
 구현에 따라 달라질 수 있으므로 성공 여부는 명령의 종료 코드와 실패 내역으로 판단합니다.

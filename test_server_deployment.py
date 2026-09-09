@@ -295,6 +295,29 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertEqual(banner, "DARTWorkforceIntelligence")
         self.assertNotIn("Python", banner)
 
+    def test_provider_rejection_log_contains_only_safe_codes(self):
+        handler = object.__new__(DashboardHandler)
+        handler._request_id = "request-safe-id"
+        stderr = io.StringIO()
+        result = {
+            "provider": {"status": "rejected", "result": "private draft"},
+            "provider_validation": {
+                "violation_codes": [
+                    "fabricated_person_judgment",
+                    "sensitive literal\nprivate-value",
+                ],
+            },
+        }
+
+        with redirect_stderr(stderr):
+            handler.log_provider_rejection(result)
+
+        log = stderr.getvalue()
+        self.assertIn("[request-safe-id] provider_output_rejected", log)
+        self.assertIn("fabricated_person_judgment", log)
+        self.assertIn("sensitive_literal_private-value", log)
+        self.assertNotIn("private draft", log)
+
     def test_runtime_data_directory_is_writable_by_default_for_frozen_app(self):
         root = Path("C:/Program Files/DART")
         self.assertEqual(
