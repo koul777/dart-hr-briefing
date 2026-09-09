@@ -552,7 +552,7 @@ function invalidatePeriodRequests(message) {
 }
 function conversationQuestion(question) {
   const latestQuestion = redactCredentialText(question).slice(0, MAX_ANALYSIS_QUESTION_CHARS);
-  const history = state.aiMessages.slice(-6).map((message) => `${message.role === "user" ? "사용자" : "AI"}: ${redactCredentialText(message.content)}`).join("\n");
+  const history = state.aiMessages.filter((message) => !message.error).slice(-6).map((message) => `${message.role === "user" ? "사용자" : "AI"}: ${redactCredentialText(message.content)}`).join("\n");
   if (!history) return latestQuestion;
   const historyHeader = "[이전 대화]\n";
   const questionHeader = "\n\n[새 질문]\n";
@@ -2140,7 +2140,7 @@ async function runAiAnalysis() {
       state.openAiConnected = false;
       state.openAiKey = "";
     }
-    state.aiMessages.push({ role: "user", content: question }, { role: "assistant", content: `오류: ${errorMessage}` });
+    state.aiMessages.push({ role: "user", content: question, error: true }, { role: "assistant", content: `오류: ${errorMessage}`, error: true });
     renderAiConversation();
     resultBox.dataset.state = "warning";
     renderApiConnection(errorMessage, true);

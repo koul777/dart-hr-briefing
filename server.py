@@ -732,6 +732,21 @@ def user_openai_provider(api_key: str) -> OpenAIResponsesProvider:
     return replace(OPENAI_PROVIDER, api_key=key)
 
 
+class FailClosedProviderFallback:
+    """Produce a rejected provider result without retaining credentials or retrying AI."""
+
+    configured = True
+
+    def __init__(self, provider: Any) -> None:
+        self.provider_id = str(getattr(provider, "provider_id", "ai_provider"))[:100]
+        self.provider_label = str(
+            getattr(provider, "provider_label", "AI provider")
+        )[:200]
+
+    def analyze(self, *, prompt: str, context: Mapping[str, Any]) -> str:
+        return " "
+
+
 def dart_request(
     endpoint: str,
     params: dict[str, str],
@@ -1986,6 +2001,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
             file=sys.stderr,
         )
 
+    def log_provider_response_fallback(
+        self,
+        exc: BaseException,
+        *,
+        stage: str,
+    ) -> None:
+        cause = getattr(exc, "__cause__", None)
+        raw_path = list(getattr(cause, "absolute_path", ()))[:8]
+        safe_path = []
+        for part in raw_path:
+            if isinstance(part, int):
+                safe_path.append(str(part))
+                continue
+            token = re.sub(r"[^A-Za-z0-9_-]", "_", str(part))[:64]
+            safe_path.append(token or "field")
+        validator = re.sub(
+            r"[^A-Za-z0-9_-]",
+            "_",
+            str(getattr(cause, "validator", "unknown")),
+        )[:32]
+        print(
+            f"[{self.request_correlation_id()}] provider_response_fallback "
+            f"stage={stage} type={type(exc).__name__} "
+            f"schema_path=$/{'/'.join(safe_path)} validator={validator or 'unknown'}",
+            file=sys.stderr,
+        )
+
     def record_orchestration_telemetry(self, result: Mapping[str, Any]) -> None:
         try:
             ORCHESTRATION_TELEMETRY.record(result)
@@ -2204,25 +2246,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 request.report_code,
                 budget,
             )
-            response = WorkforceAgentOrchestrator(provider=provider).run(
-                observations,
-                request_context={
-                    "question": request.question,
-                    "view": request.view,
-                    "metric_ids": request.metric_ids,
-                },
-            )
-            response["selection"] = {
-                "count": len(request.corp_codes),
-                "max": MAX_COMPANIES,
+            request_context = {
+                "question": request.question,
+                "view": request.view,
+                "metric_ids": request.metric_ids,
             }
-            response["source"] = "OpenDART"
-            response["evidence"]["reference_mode"] = "opendart_receipt"
-            response["evidence"]["external_source_links"] = True
-            response["evidence"]["source_notice"] = (
-                "OpenDART 공시 접수번호로 검증할 수 있는 원문 링크입니다."
-            )
-            validate_orchestration_response(response)
+
+            def build_response(active_provider: Any | None) -> dict[str, Any]:
+                result = WorkforceAgentOrchestrator(provider=active_provider).run(
+                    observations,
+                    request_context=request_context,
+                )
+                result["selection"] = {
+                    "count": len(request.corp_codes),
+                    "max": MAX_COMPANIES,
+                }
+                result["source"] = "OpenDART"
+                result["evidence"]["reference_mode"] = "opendart_receipt"
+                result["evidence"]["external_source_links"] = True
+                result["evidence"]["source_notice"] = (
+                    "OpenDART 공시 접수번호로 검증할 수 있는 원문 링크입니다."
+                )
+                return result
+
+            fallback_failure: tuple[str, RuntimeError] | None = None
+            try:
+                response = build_response(provider)
+            except RuntimeError as exc:
+                fallback_failure = ("orchestration", exc)
+            else:
+                try:
+                    validate_orchestration_response(response)
+                except RuntimeError as exc:
+                    fallback_failure = ("schema", exc)
+
+            if fallback_failure is not None:
+                if provider is None:
+                    raise fallback_failure[1]
+                fallback_stage, fallback_error = fallback_failure
+                self.log_provider_response_fallback(
+                    fallback_error,
+                    stage=fallback_stage,
+                )
+                response = build_response(FailClosedProviderFallback(provider))
+                validate_orchestration_response(response)
             self.record_orchestration_telemetry(response)
             self.send_json(response)
         except MalformedContentLength as exc:

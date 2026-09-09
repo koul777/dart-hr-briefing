@@ -219,6 +219,11 @@ class FrontendVisualContractTests(unittest.TestCase):
         self.assertIn("const contributing = values.filter((row) => row.weight > 0)", self.app)
         self.assertIn("questionInput.value = question", self.app)
         self.assertIn("redactCredentialText(message.content)", self.app)
+        self.assertIn(
+            "state.aiMessages.filter((message) => !message.error)",
+            self.app,
+        )
+        self.assertIn('content: `오류: ${errorMessage}`, error: true', self.app)
         self.assertNotIn('localstorage.setitem("openai', self.app.lower())
         self.assertIn("const safeStorageGet", self.app)
         self.assertIn("const safeStorageSet", self.app)

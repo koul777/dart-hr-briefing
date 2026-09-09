@@ -1977,6 +1977,86 @@ class ServerDeploymentTests(unittest.TestCase):
             response["provider_validation"]["violation_codes"],
         )
 
+    def test_point_analysis_falls_back_when_provider_response_validation_crashes(self):
+        class FakeProvider:
+            configured = True
+            provider_id = "fake"
+            provider_label = "Fake"
+
+            def __init__(self):
+                self.calls = 0
+
+            def analyze(self, *, prompt, context):
+                self.calls += 1
+                return " "
+
+        body = json.dumps(
+            {
+                "question": "인당 생산성 비교해줘",
+                "view": "strategy",
+                "corp_codes": ["001"],
+                "year": "2024",
+                "report_code": "11011",
+                "provider_data_consent": True,
+            }
+        ).encode("utf-8")
+        handler = object.__new__(DashboardHandler)
+        handler.path = "/api/analysis"
+        handler.headers = {
+            "Content-Length": str(len(body)),
+            "Content-Type": "application/json",
+            "Host": "localhost",
+        }
+        handler.rfile = io.BytesIO(body)
+        provider = FakeProvider()
+        handler.request_openai_provider = lambda: provider
+        fallback_stages = []
+        handler.log_provider_response_fallback = (
+            lambda _exc, *, stage: fallback_stages.append(stage)
+        )
+        responses = []
+        handler.send_json = lambda payload, status=HTTPStatus.OK: responses.append(
+            (status, payload)
+        )
+        observations = [
+            WorkforceObservation.from_mapping(
+                {
+                    "company": {"corp_code": "001", "corp_name": "A사"},
+                    "year": "2024",
+                    "report_code": "11011",
+                    "employee_rows": [
+                        {
+                            "sexdstn": "전체",
+                            "sm": "100",
+                            "rcept_no": "20250000000001",
+                        }
+                    ],
+                    "financials": {"revenue": 10000000000},
+                    "source_urls": [
+                        "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250000000001"
+                    ],
+                }
+            )
+        ]
+
+        with (
+            patch("server.fetch_workforce_observations", return_value=observations),
+            patch(
+                "server.validate_orchestration_response",
+                side_effect=[RuntimeError("simulated schema failure"), None],
+            ) as validate,
+        ):
+            handler.do_POST()
+
+        status, response = responses[-1]
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(response["provider"]["status"], "rejected")
+        self.assertIsNone(response["provider"]["result"])
+        self.assertEqual(response["provider_validation"]["status"], "rejected")
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(fallback_stages, ["schema"])
+        self.assertEqual(validate.call_count, 2)
+
     def test_range_ai_is_fail_closed_before_legacy_provider_path(self):
         body = json.dumps(
             {
