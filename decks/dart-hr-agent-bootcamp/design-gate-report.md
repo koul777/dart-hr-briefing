@@ -1,20 +1,32 @@
-## Design Gate Report — DART로 HR Analytics 에이전트 만들기
+# Design Gate Report — DART API부터 배포까지 직접 만들어가기
 
-**Slides reviewed:** slide-01 … slide-46  
-**Technical validation:** pass — 46/46 slides, 0 errors, 0 warnings
+**Final scope:** slide-01 … slide-72
+**Technical validation:** PASS — 72/72 slides, 0 errors, 0 warnings
+**Pass A:** PASS — content/system truth, unresolved critical 0
+**Pass B:** PASS — visual/classroom usability, unresolved critical 0
+**Verdict:** PROCEED
 
-### Findings
-| Slide | Finding | Severity | Fix |
-|-------|---------|----------|-----|
-| slide-21 | Stock code and OpenDART identifier were initially ambiguous. | Major | Resolved with `005930 → corp_code 00126380`. |
-| slides-03–38 | Substantive secondary text initially fell below the declared 15pt classroom standard. | Major | Resolved by raising body, caption, checkpoint, table, code, and flow text to 15pt. |
-| slides-34, 36 | The first GitHub flow initially reviewed staged content at the wrong time. | Major | Resolved with pre-stage ignore/tracking checks and post-stage filename/diff review before commit. |
-| slide-37 | The first repository screenshot contradicted the student cleanup rule. | Major | Replaced with a clean expected-file checklist for `dart-hr-agent`. |
-| slide-40 | The first Vercel key guidance mixed the classroom path with operator automation. | Major | Limited the slide to the actual classroom contract: DART server key, optional model, participant browser AI key. |
-| slide-42 | The first security wording implied public source could be hidden. | Major | Replaced with checks for secret non-exposure and blocked server-file URLs. |
+## What the gate verified
 
-### Verdict
-Proceed
+- The deck follows the actual build sequence: Starter copy and baseline commit, OpenDART key issuance, `.env`, Claude Code prompt/approval/diff loop, UI growth, OpenDART and AI API paths, GitHub, and Vercel.
+- Browser, Python server, OpenDART, and OpenAI Responses API boundaries are explicit; real keys do not appear in source, logs, responses, or screenshots.
+- The Starter's startup text, port, health identity, unimplemented routes, and deployment files agree with the slides and handouts.
+- All 14 complete Claude Code prompts are present in both the deck and participant prompt sheet.
+- Earlier clipping on the OpenDART mockup, prompt terminal, combined JSON, and Vercel environment-variable panel is resolved.
+- Every final HTML slide is SHA256-fingerprinted in both independent reports.
 
-**Reason:** Both independent visual review passes inspected the fresh 46-slide render and returned PASS with high confidence, zero unresolved Critical findings, and no blocking findings. The final technical validation is clean.
+## Accepted nonblocking notes
 
+- Whole-app screenshot microtext should be shown with live zoom when discussing individual values.
+- Long shell commands on slides 08 and 64 may soft-wrap; participants should copy them from the handout.
+- API code panels are focused excerpts. The preceding prompts require validation, helper functions, and failure handling in the actual implementation.
+
+## Evidence
+
+- `design-gate-pass-a.md`
+- `design-gate-pass-b.md`
+- `gate-preview/slide-01.png` through `gate-preview/slide-72.png`
+- `qa-contact-sheets/sheet-1.png` through `qa-contact-sheets/sheet-8.png`
+- `slide-outline.md`, `participant-prompts.md`, `speaker-notes.md`, `GitHub_Vercel_배포_실습지.md`
+
+Any later change to slide HTML requires a new validation/render pass and refreshed fingerprints.

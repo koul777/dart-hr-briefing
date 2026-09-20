@@ -21,6 +21,7 @@ build/
 *.zip
 *.7z
 *.pptx
+!decks/dart-hr-agent-bootcamp/DART_HR_Analytics_Agent_4시간_강의.pptx
 *.exe
 *.previous.exe
 *.visual-check.*

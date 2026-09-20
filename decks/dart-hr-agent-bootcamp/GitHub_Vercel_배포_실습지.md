@@ -9,13 +9,12 @@
 ### 1. 업로드 전 확인
 
 ```powershell
-git init
 git status
 git check-ignore .env
 git ls-files .env
 ```
 
-마지막 명령은 출력이 없어야 합니다. `.env`, 실제 API 키, 개인 데이터, 로컬 빌드·보고서·영상 산출물이 커밋 대상에 없어야 합니다.
+Starter 복사 직후 만든 `Save workshop starter` 기준 커밋이 있어야 합니다. 마지막 명령은 출력이 없어야 합니다. `.env`, 실제 API 키, 개인 데이터, 로컬 빌드·보고서·영상 산출물이 커밋 대상에 없어야 합니다.
 
 ### 2. 빈 저장소 생성
 
@@ -91,8 +90,9 @@ ROOT    /
 HEALTH  /api/health
 ```
 
-5. 루트 화면에서 **합성 샘플로 시작**을 한 번 실행합니다.
-6. `/api/health`의 `app.id`를 확인합니다.
+5. `/api/health`에서 `api_key_configured: true`와 `app.id`를 확인합니다.
+6. 루트 화면에서 기업을 검색하고, 같은 연도·보고서로 두 기업 비교를 한 번 실행합니다.
+7. AI까지 구현했다면 `/api/ai/briefing` 요청이 성공하고 응답·로그·URL에 키가 없는지 확인합니다.
 
 공식 참고: [Vercel — Git 저장소 배포](https://vercel.com/docs/git), [Vercel — 환경변수 관리](https://vercel.com/docs/environment-variables/managing-environment-variables)
 

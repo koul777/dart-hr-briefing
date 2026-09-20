@@ -8,7 +8,7 @@
 
 OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도와 보고서로 묶어 비교하고, **무엇을 판단할 수 있는지·무엇을 더 확인해야 하는지**를 근거와 함께 제시하는 People Analytics 프로그램입니다. AI는 사용자가 직접 실행하는 선택적 해석 보조이며, 결정 브리프와 수치는 AI 없이도 동일 입력에 동일 결과를 냅니다.
 
-<p align="center"><strong>운영 앱:</strong> <a href="https://dart-ruby-zeta.vercel.app"><strong>https://dart-ruby-zeta.vercel.app</strong></a> · <a href="OpenDART_HR_Analytics_4시간_커리큘럼.md">4시간 실습 커리큘럼</a> · <a href="decks/dart-hr-agent-bootcamp/DART_HR_Analytics_Agent_4시간_강의.pdf">46장 강의자료</a> · <a href="docs/HR_DECISION_SUPPORT.md">HR 판단지원 해설</a></p>
+<p align="center"><strong>운영 앱:</strong> <a href="https://dart-ruby-zeta.vercel.app"><strong>https://dart-ruby-zeta.vercel.app</strong></a> · <a href="OpenDART_HR_Analytics_4시간_커리큘럼.md">4시간 실습 커리큘럼</a> · <a href="decks/dart-hr-agent-bootcamp/DART_HR_Analytics_Agent_4시간_강의.pdf">72장 과정 중심 강의자료</a> · <a href="docs/HR_DECISION_SUPPORT.md">HR 판단지원 해설</a></p>
 
 ## 현재 배포 상태
 
@@ -25,7 +25,8 @@ OpenDART의 기업 재무·직원·보상·임원 공시를 같은 기준연도�
 | AI | 사용자가 입력한 OpenAI API Key로 명시적 실행. 서버 소유 운영자 AI provider는 현재 비활성화 |
 | 안전장치 | 질문 지표 적합성, 기업·수치·근거 귀속, 개인정보·인과·개인판단 출력 가드와 OpenDART 근거 대체 응답 |
 | 검증 | Python 468건 회귀 통과 · 실제 Claude 모델 질문 3/3 통과 · production post-deploy smoke 통과 |
-| 강의 자료 | 수업 투입용 16:9 총 46장. 발표 PDF·브라우저 뷰어·발표자 노트·18개 실습 프롬프트·GitHub/Vercel 실습지는 `decks/dart-hr-agent-bootcamp/` 기준 |
+| 강의 자료 | 수업 투입용 16:9 총 72장. OpenDART 키 발급·`.env`·Claude Code 입력/승인/diff·브라우저→서버→OpenDART·AI Provider 연결·14개 핵심 실습 프롬프트·GitHub/Vercel 배포 과정을 `decks/dart-hr-agent-bootcamp/`에 수록 |
+| 교육용 Starter | [`workshop_starter/`](workshop_starter/)를 개인 폴더로 복사해 시작. 서버·health·빈 화면만 제공하며 `/api/companies`, `/api/financials`, `/api/people`은 실습 프롬프트로 구현 |
 | 홍보영상 | [`docs/assets/dart-hr-briefing-promo.mp4`](docs/assets/dart-hr-briefing-promo.mp4), 1920×1080·30fps·36.2초 |
 
 운영 URL의 기능 여부는 문구만 믿지 않고 [`docs/PRODUCTION_RELEASE_CHECKLIST.md`](docs/PRODUCTION_RELEASE_CHECKLIST.md)의
@@ -77,16 +78,16 @@ post-deploy smoke가 root·정적 자산·소스 비공개·합성 데이터 계
   업로드 목록, 배포 후 commit SHA·합성 계약·소스 비공개 검사, 비밀·대용량 파일 차단을 CI에 추가했습니다.
   로컬 전용 PPT 자산이 없는 clean checkout과 Windows·Linux 경로 차이도 구분해 검증합니다.
 - **강의 운영 자료:** 4시간 실습 커리큘럼, 강사용·참가자용 런북, 실제 프로그램을 직접 조작해
-  캡처한 16:9 총 46장 강의 덱, 발표자 노트, 18개 프롬프트와 GitHub/Vercel 실습지를 정리했습니다.
+  캡처한 16:9 총 72장 과정 중심 강의 덱, 발표자 노트, 14개 핵심 프롬프트와 GitHub/Vercel 실습지를 정리했습니다.
 
 수업 투입 기준 자료는 `decks/dart-hr-agent-bootcamp/`에 있습니다. PDF와 브라우저 뷰어는 저장소에서
-바로 열 수 있고, 이미지 기반 PPTX는 로컬 산출물로 보존합니다. HTML 46장과 1080p 렌더는 기술 검증
+바로 열 수 있고, 이미지 기반 PPTX는 로컬 산출물로 보존합니다. HTML 72장과 1080p 렌더는 기술 검증
 46/46·경고 0건과 독립 시각 검수 2회를 통과했습니다. 이전 제작 자산이 있는 `training_deck/`은 용량이
 커서 Git과 Vercel 배포에서 계속 제외합니다.
 
 ### 강의 운영 불변식
 
-- 수업은 **46장**으로 4시간 골든패스를 운영하며 m1~m4 체크포인트에서 진행 상태를 확인합니다.
+- 수업은 **72장**으로 4시간 골든패스를 운영하며 MODULE 01~04 체크포인트에서 진행 상태를 확인합니다.
 - 각 하드 체크포인트의 **정시 통과율이 80% 미만**이면 현재 작업을 보존하고 검증된 복구본으로
   전환합니다.
 - 같은 OpenDART 요청은 **최초 요청 포함 최대 3회**, 즉 **재시도 최대 2회**에서 멈추고 합성
@@ -671,7 +672,7 @@ python -m http.server --directory docs 8000
 ## 문서
 
 - [`OpenDART_HR_Analytics_4시간_커리큘럼.md`](OpenDART_HR_Analytics_4시간_커리큘럼.md) — 2026년 9월 30일 WEEK 2, 4시간 실습형 강의 구성
-- [`decks/dart-hr-agent-bootcamp/DART_HR_Analytics_Agent_4시간_강의.pdf`](decks/dart-hr-agent-bootcamp/DART_HR_Analytics_Agent_4시간_강의.pdf) — 실제 프로그램 화면과 GitHub·Vercel 단계별 실습을 포함한 46장 발표자료
+- [`decks/dart-hr-agent-bootcamp/DART_HR_Analytics_Agent_4시간_강의.pdf`](decks/dart-hr-agent-bootcamp/DART_HR_Analytics_Agent_4시간_강의.pdf) — OpenDART 키 발급부터 프롬프트·API 연결·GitHub·Vercel까지 따라가는 72장 발표자료
 - [`decks/dart-hr-agent-bootcamp/강의_바로시작.md`](decks/dart-hr-agent-bootcamp/강의_바로시작.md) — 강사용 10분 사전점검과 4시간 운영 순서
 - [`decks/dart-hr-agent-bootcamp/GitHub_Vercel_배포_실습지.md`](decks/dart-hr-agent-bootcamp/GitHub_Vercel_배포_실습지.md) — 수강생용 저장소 생성·첫 push·Vercel 배포·오류 복구 실습지
 - [`docs/PARTICIPANT_PREFLIGHT.md`](docs/PARTICIPANT_PREFLIGHT.md) — 참가자 계정·환경·보안 사전점검과 복구 방법
