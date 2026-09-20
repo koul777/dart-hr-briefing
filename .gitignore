@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 venv/
 env/
+.tmp/
 node_modules/
 data/
 .coverage
